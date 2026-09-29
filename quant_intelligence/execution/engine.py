@@ -5,6 +5,10 @@ auto-trading scan in a background thread. Because it lives at module level (not 
 Streamlit session or page), switching pages - or closing the browser tab - does not stop it;
 only `stop()` (or the server restarting / the cloud app sleeping) does.
 
+A second runner (`COMMODITY_RUNNER`) scans MCX commodities on its own thread and session
+hours while borrowing the NSE engine's broker, counters and kill switch, so both draw on one
+shared cash pool.
+
 Streamlit-free on purpose: a background thread has no ScriptRunContext, so nothing here
 may call `st.*`.
 """
@@ -18,18 +22,26 @@ from quant_intelligence.config.settings import SETTINGS
 from quant_intelligence.execution.multi_cycle import run_multi_instrument_cycle
 from quant_intelligence.risk.risk_engine import AccountState
 from quant_intelligence.utils.logging_utils import log_event
+from quant_intelligence.utils.market_profile import MCX, NSE, MarketProfile
 from quant_intelligence.utils.timeutil import is_market_open, now_ist, today_ist
 
 
-class TradingEngine:
-    def __init__(self) -> None:
-        self.broker = PaperBroker()
-        self.lock = threading.RLock()
-        self.kill_switch = False
-        self.trades_today = 0
-        self.daily_pnl = 0.0
-        self.peak_equity = SETTINGS.paper_starting_capital
-        self._day = today_ist()
+class ScanRunner:
+    """A background scan loop over one watchlist in one market session.
+
+    Several runners can run at once (NSE indices+stocks, MCX commodities). They share one
+    `owner` TradingEngine - and therefore one broker, one cash pool, one set of daily risk
+    counters and one kill switch - but each has its own thread, stop event, session profile
+    and status. A runner holds only its own `scan_lock` for the whole scan; the owner's short
+    `lock` is taken just around broker mutations (see multi_cycle), so a long NSE scan never
+    blocks the commodity runner.
+    """
+
+    def __init__(self, name: str, profile: MarketProfile, owner: "TradingEngine | None" = None) -> None:
+        self.name = name
+        self.profile = profile
+        self.owner = owner if owner is not None else self  # TradingEngine owns its own state
+        self.scan_lock = threading.RLock()
 
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -41,6 +53,95 @@ class TradingEngine:
         self.last_status = "Not started"
         self.last_error: str | None = None
         self.market_hours_only = True
+
+    # ---- scanning ------------------------------------------------------------
+    def run_cycle(self, index_symbols, stock_symbols, timeframe: str, lookback_days: int) -> list[dict]:
+        """One full scan. Safe to call from the UI thread ('Run one cycle now') or the worker."""
+        owner = self.owner
+        with self.scan_lock:
+            # Fresh client each cycle so a token updated in the sidebar/secrets applies immediately.
+            rows, pnl_delta = run_multi_instrument_cycle(
+                list(index_symbols), list(stock_symbols), timeframe, lookback_days,
+                owner.broker, DhanApiClient(), owner.account_state,
+                broker_lock=owner.lock, on_fill=owner.add_trade,
+            )
+            owner.add_pnl(pnl_delta)
+            self.last_rows = rows
+            self.last_cycle_at = now_ist()
+            self.cycles += 1
+            return rows
+
+    def start(self, index_symbols, stock_symbols, timeframe: str, lookback_days: int,
+              interval_seconds: int | None = None, market_hours_only: bool = True) -> bool:
+        with self.owner.lock:
+            if self.running:
+                return False
+            self.market_hours_only = market_hours_only
+            self._stop = threading.Event()  # fresh event per run: an old worker can never be revived
+            self.running = True
+            self.started_at = now_ist()
+            self.last_error = None
+            self.last_status = "Starting"
+            interval = interval_seconds or SETTINGS.auto_trade_refresh_seconds
+            self._thread = threading.Thread(
+                target=self._loop,
+                args=(self._stop, list(index_symbols), list(stock_symbols), timeframe, lookback_days, interval),
+                name=f"auto-paper-trader-{self.name}",
+                daemon=True,
+            )
+            self._thread.start()
+        log_event("engine", f"Auto paper trading started ({self.name})", level="INFO")
+        return True
+
+    def stop(self) -> None:
+        # No lock: must return immediately even while a long scan cycle holds it.
+        self._stop.set()
+        self.running = False
+        self.last_status = "Stopped"
+        log_event("engine", f"Auto paper trading stopped ({self.name})", level="INFO")
+
+    def _loop(self, stop, index_symbols, stock_symbols, timeframe, lookback_days, interval) -> None:
+        while not stop.is_set():
+            try:
+                if self.market_hours_only and not is_market_open(profile=self.profile):
+                    self.last_status = f"Market closed - waiting for {self.profile.open:%H:%M} IST"
+                elif self.owner.kill_switch:
+                    self.last_status = "Kill switch engaged - not trading"
+                else:
+                    self.last_status = "Scanning"
+                    self.run_cycle(index_symbols, stock_symbols, timeframe, lookback_days)
+                    self.last_status = "Idle until next cycle"
+                    self.last_error = None
+            except Exception as e:  # a bad cycle must never kill the worker
+                self.last_error = f"{type(e).__name__}: {e}"
+                self.last_status = "Last cycle failed - will retry"
+                log_event("engine", f"Auto cycle failed ({self.name}): {e}", level="ERROR")
+            stop.wait(interval)
+
+    def status(self) -> dict:
+        alive = bool(self._thread and self._thread.is_alive())
+        return {
+            "running": self.running and alive,
+            "started_at": self.started_at,
+            "cycles": self.cycles,
+            "last_cycle_at": self.last_cycle_at,
+            "last_status": self.last_status,
+            "last_error": self.last_error,
+        }
+
+
+class TradingEngine(ScanRunner):
+    """The NSE runner, which also owns the shared broker, risk counters and kill switch."""
+
+    def __init__(self) -> None:
+        super().__init__("nse", NSE)
+        self.broker = PaperBroker()
+        self.lock = threading.RLock()
+        self.kill_switch = False
+        self.trades_today = 0
+        self.daily_pnl = 0.0
+        self.peak_equity = SETTINGS.paper_starting_capital
+        self._day = today_ist()
 
     # ---- shared risk counters ------------------------------------------------
     def _roll_day(self) -> None:
@@ -86,80 +187,6 @@ class TradingEngine:
                 kill_switch_engaged=self.kill_switch,
             )
 
-    # ---- scanning ------------------------------------------------------------
-    def run_cycle(self, index_symbols, stock_symbols, timeframe: str, lookback_days: int) -> list[dict]:
-        """One full scan. Safe to call from the UI thread ('Run one cycle now') or the worker."""
-        with self.lock:
-            before = len(self.broker.positions)
-            # Fresh client each cycle so a token updated in the sidebar/secrets applies immediately.
-            rows, pnl_delta = run_multi_instrument_cycle(
-                list(index_symbols), list(stock_symbols), timeframe, lookback_days,
-                self.broker, DhanApiClient(), self.account_state,
-            )
-            self.add_trade(len(self.broker.positions) - before)
-            self.add_pnl(pnl_delta)
-            self.last_rows = rows
-            self.last_cycle_at = now_ist()
-            self.cycles += 1
-            return rows
-
-    def start(self, index_symbols, stock_symbols, timeframe: str, lookback_days: int,
-              interval_seconds: int | None = None, market_hours_only: bool = True) -> bool:
-        with self.lock:
-            if self.running:
-                return False
-            self.market_hours_only = market_hours_only
-            self._stop = threading.Event()  # fresh event per run: an old worker can never be revived
-            self.running = True
-            self.started_at = now_ist()
-            self.last_error = None
-            self.last_status = "Starting"
-            interval = interval_seconds or SETTINGS.auto_trade_refresh_seconds
-            self._thread = threading.Thread(
-                target=self._loop,
-                args=(self._stop, list(index_symbols), list(stock_symbols), timeframe, lookback_days, interval),
-                name="auto-paper-trader",
-                daemon=True,
-            )
-            self._thread.start()
-        log_event("engine", "Auto paper trading started", level="INFO")
-        return True
-
-    def stop(self) -> None:
-        # No lock: must return immediately even while a long scan cycle holds it.
-        self._stop.set()
-        self.running = False
-        self.last_status = "Stopped"
-        log_event("engine", "Auto paper trading stopped", level="INFO")
-
-    def _loop(self, stop, index_symbols, stock_symbols, timeframe, lookback_days, interval) -> None:
-        while not stop.is_set():
-            try:
-                if self.market_hours_only and not is_market_open():
-                    self.last_status = "Market closed - waiting for 09:15 IST"
-                elif self.kill_switch:
-                    self.last_status = "Kill switch engaged - not trading"
-                else:
-                    self.last_status = "Scanning"
-                    self.run_cycle(index_symbols, stock_symbols, timeframe, lookback_days)
-                    self.last_status = "Idle until next cycle"
-                    self.last_error = None
-            except Exception as e:  # a bad cycle must never kill the worker
-                self.last_error = f"{type(e).__name__}: {e}"
-                self.last_status = "Last cycle failed - will retry"
-                log_event("engine", f"Auto cycle failed: {e}", level="ERROR")
-            stop.wait(interval)
-
-    def status(self) -> dict:
-        alive = bool(self._thread and self._thread.is_alive())
-        return {
-            "running": self.running and alive,
-            "started_at": self.started_at,
-            "cycles": self.cycles,
-            "last_cycle_at": self.last_cycle_at,
-            "last_status": self.last_status,
-            "last_error": self.last_error,
-        }
-
 
 ENGINE = TradingEngine()
+COMMODITY_RUNNER = ScanRunner("commodities", MCX, owner=ENGINE)

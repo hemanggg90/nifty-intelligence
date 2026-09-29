@@ -16,7 +16,7 @@ def _wait(cond, timeout=5.0):
 
 
 def _patch_cycle(monkeypatch, calls, fail=False):
-    def fake(index, stocks, tf, lb, broker, client, get_account):
+    def fake(index, stocks, tf, lb, broker, client, get_account, **kwargs):
         calls.append((list(index), list(stocks)))
         if fail:
             raise RuntimeError("boom")
@@ -69,14 +69,14 @@ def test_a_failing_cycle_does_not_kill_the_worker(monkeypatch):
 def test_waits_outside_market_hours_and_when_kill_switch_engaged(monkeypatch):
     calls = []
     _patch_cycle(monkeypatch, calls)
-    monkeypatch.setattr(engine_module, "is_market_open", lambda: False)
+    monkeypatch.setattr(engine_module, "is_market_open", lambda **kw: False)
     eng = TradingEngine()
     eng.start(["NIFTY"], [], "5min", 30, interval_seconds=0.05, market_hours_only=True)
     assert _wait(lambda: "Market closed" in eng.status()["last_status"])
     assert calls == []
     eng.stop()
 
-    monkeypatch.setattr(engine_module, "is_market_open", lambda: True)
+    monkeypatch.setattr(engine_module, "is_market_open", lambda **kw: True)
     eng = TradingEngine()
     eng.kill_switch = True
     eng.start(["NIFTY"], [], "5min", 30, interval_seconds=0.05, market_hours_only=True)

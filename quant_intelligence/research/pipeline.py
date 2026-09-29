@@ -21,6 +21,7 @@ from quant_intelligence.analogues.analogue_engine import (
 from quant_intelligence.backtesting.engine import run_backtest, BacktestResult
 from quant_intelligence.data.data_manager import DataManager
 from quant_intelligence.features.feature_engine import compute_features
+from quant_intelligence.utils.market_profile import profile_for
 from quant_intelligence.market_state.market_state_engine import MarketState, build_current_state
 from quant_intelligence.ranking.ranking_engine import RankingDecision, StrategyScore, rank_and_select, score_strategy
 from quant_intelligence.regimes.regime_engine import classify_regime, regime_confidence
@@ -69,7 +70,7 @@ def run_pipeline(
             f"({len(ohlcv)} rows). Widen the date range."
         )
 
-    features = compute_features(ohlcv)
+    features = compute_features(ohlcv, profile_for(instrument))
     data_quality_status = metadata["quality_status"]
 
     market_state = build_current_state(instrument, features, data_quality_status)

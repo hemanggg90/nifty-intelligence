@@ -22,3 +22,23 @@ WATCHLIST_STOCKS: list[dict[str, str]] = [
     {"symbol": "INFY", "name": "Infosys", "sector": "Information Technology"},
     {"symbol": "KOTAKBANK", "name": "Kotak Mahindra Bank", "sector": "Financial Services (Banking)"},
 ]
+
+
+# MCX commodities traded as options on the front-month future. `lot_size` is the exchange
+# contract multiplier in PRICE units (P&L per 1.0 move in the quoted premium/price), because
+# Dhan's scrip master reports SEM_LOT_UNITS=1 for every MCX contract. These come from MCX's
+# published contract specs, NOT from Dhan - verify against the exchange before trusting P&L:
+#   CRUDEOIL 100 bbl | CRUDEOILM 10 bbl | NATURALGAS 1250 mmBtu | GOLD 1 kg (quoted per 10 g -> x100)
+#   GOLDM 100 g (per 10 g -> x10) | SILVER 30 kg (per kg) | SILVERM 5 kg (per kg) | COPPER 2500 kg (per kg)
+WATCHLIST_COMMODITIES: list[dict] = [
+    {"symbol": "CRUDEOIL", "name": "Crude Oil", "sector": "Energy", "lot_size": 100},
+    {"symbol": "CRUDEOILM", "name": "Crude Oil Mini", "sector": "Energy", "lot_size": 10},
+    {"symbol": "NATURALGAS", "name": "Natural Gas", "sector": "Energy", "lot_size": 1250},
+    {"symbol": "GOLD", "name": "Gold", "sector": "Precious metals", "lot_size": 100},
+    {"symbol": "GOLDM", "name": "Gold Mini", "sector": "Precious metals", "lot_size": 10},
+    {"symbol": "SILVER", "name": "Silver", "sector": "Precious metals", "lot_size": 30},
+    {"symbol": "SILVERM", "name": "Silver Mini", "sector": "Precious metals", "lot_size": 5},
+    {"symbol": "COPPER", "name": "Copper", "sector": "Base metals", "lot_size": 2500},
+]
+COMMODITY_SYMBOLS: frozenset[str] = frozenset(c["symbol"] for c in WATCHLIST_COMMODITIES)
+COMMODITY_LOT_SIZES: dict[str, int] = {c["symbol"]: c["lot_size"] for c in WATCHLIST_COMMODITIES}

@@ -17,9 +17,10 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from quant_intelligence.utils.market_calendar import most_recent_expected_bar_time
+from quant_intelligence.utils.market_profile import NSE, MarketProfile
 
-SESSION_OPEN_MIN = 9 * 60 + 15
-SESSION_CLOSE_MIN = 15 * 60 + 30
+SESSION_OPEN_MIN = NSE.open_min
+SESSION_CLOSE_MIN = NSE.close_min
 # More than this fraction of bars outside the session means the clock/timezone is wrong
 # (a real misalignment), as opposed to a few stray pre/post-close prints.
 MAX_OUT_OF_SESSION_FRACTION = 0.02
@@ -48,10 +49,10 @@ class QualityReport:
         return d
 
 
-def out_of_session_mask(timestamps: pd.Series) -> pd.Series:
+def out_of_session_mask(timestamps: pd.Series, profile: MarketProfile = NSE) -> pd.Series:
     ts = pd.to_datetime(timestamps)
     minutes = ts.dt.hour * 60 + ts.dt.minute
-    return (minutes < SESSION_OPEN_MIN) | (minutes >= SESSION_CLOSE_MIN)
+    return (minutes < profile.open_min) | (minutes >= profile.close_min)
 
 
 def validate_ohlcv(
@@ -59,6 +60,7 @@ def validate_ohlcv(
     timeframe_minutes: int,
     staleness_threshold_minutes: int = 30,
     now: dt.datetime | None = None,
+    profile: MarketProfile = NSE,
 ) -> QualityReport:
     issues: list[str] = []
     n_rows = len(df)
@@ -85,9 +87,9 @@ def validate_ohlcv(
 
     n_out_of_session = 0
     if timeframe_minutes < 1440:
-        n_out_of_session = int(out_of_session_mask(df["timestamp"]).sum())
+        n_out_of_session = int(out_of_session_mask(df["timestamp"], profile).sum())
         if n_out_of_session / n_rows > MAX_OUT_OF_SESSION_FRACTION:
-            issues.append(f"{n_out_of_session} bars outside the 09:15-15:30 session (timezone/data error)")
+            issues.append(f"{n_out_of_session} bars outside the {profile.label} session (timezone/data error)")
         else:
             n_out_of_session = 0  # a few stray pre/post-close prints; removed by clean_ohlcv
 
@@ -113,7 +115,7 @@ def validate_ohlcv(
 
     last_timestamp = ts.max()
     now = now or now_ist()
-    reference = most_recent_expected_bar_time(now)
+    reference = most_recent_expected_bar_time(now, profile)
     last_ts_py = last_timestamp.to_pydatetime()
     if last_ts_py.tzinfo is None:
         last_ts_py = last_ts_py.replace(tzinfo=reference.tzinfo)
@@ -146,11 +148,11 @@ def validate_ohlcv(
     )
 
 
-def clean_ohlcv(df: pd.DataFrame, timeframe_minutes: int | None = None) -> pd.DataFrame:
+def clean_ohlcv(df: pd.DataFrame, timeframe_minutes: int | None = None, profile: MarketProfile = NSE) -> pd.DataFrame:
     """Deterministic cleanup: drop duplicate timestamps (keep last) and, for intraday
     data, bars outside the 09:15-15:30 session (stray pre/post-close prints); sort, reset index."""
     if timeframe_minutes is not None and timeframe_minutes < 1440 and len(df):
-        df = df[~out_of_session_mask(df["timestamp"])]
+        df = df[~out_of_session_mask(df["timestamp"], profile)]
     df = df.drop_duplicates(subset="timestamp", keep="last")
     df = df.sort_values("timestamp").reset_index(drop=True)
     return df

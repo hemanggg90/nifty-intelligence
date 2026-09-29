@@ -22,6 +22,7 @@ from quant_intelligence.data_adapters import dhan_instrument_master
 from quant_intelligence.data_adapters.base import DataAdapter, OHLCV_COLUMNS
 from quant_intelligence.data_adapters.synthetic import _parse_timeframe_minutes
 from quant_intelligence.options.option_selector import UNDERLYING_REGISTRY as _INDEX_UNDERLYINGS
+from quant_intelligence.utils.market_profile import NSE, MarketProfile, profile_for
 
 _INTRADAY_MAX_DAYS = 90
 _INTRADAY_ALLOWED_MINUTES = {1, 5, 15, 25, 60}
@@ -51,13 +52,18 @@ class DhanAdapter(DataAdapter):
         if index_info is not None:
             resolved = {"security_id": str(index_info["security_id"]), "exchange_segment": index_info["seg"]}
             dhan_instrument = "INDEX"
+        elif profile_for(instrument).name == "MCX":
+            # Commodity candles come from the front-month future (continuous-series style).
+            mcx = dhan_instrument_master.resolve_mcx(instrument)
+            resolved = None if mcx is None else {"security_id": mcx["security_id"], "exchange_segment": mcx["seg"]}
+            dhan_instrument = "FUTCOM"
         else:
             resolved = dhan_instrument_master.resolve_equity(instrument)
             dhan_instrument = "EQUITY"
         if resolved is None:
             raise RuntimeError(
                 f"'{instrument}' could not be resolved to a Dhan security_id "
-                "(supported: NIFTY, BANKNIFTY and NSE equities)."
+                "(supported: NIFTY, BANKNIFTY, NSE equities and the MCX commodity watchlist)."
             )
 
         client = self._client or DhanApiClient(self.client_id, self.access_token)
@@ -87,40 +93,36 @@ class DhanAdapter(DataAdapter):
         intraday = tf_minutes in _INTRADAY_ALLOWED_MINUTES and (end - start).days <= _INTRADAY_MAX_DAYS
         df = _map_response_to_ohlcv(body)
         if intraday:
-            df = _align_to_ist_session(df)
+            df = _align_to_ist_session(df, profile_for(instrument))
             df = drop_forming_bar(df, tf_minutes)
         return df
 
 
-_SESSION_OPEN_MIN = 9 * 60 + 15
-_SESSION_CLOSE_MIN = 15 * 60 + 30
-
-
-def _in_session_mask(ts: pd.Series) -> pd.Series:
+def _in_session_mask(ts: pd.Series, profile: MarketProfile = NSE) -> pd.Series:
     minutes = ts.dt.hour * 60 + ts.dt.minute
-    return (minutes >= _SESSION_OPEN_MIN) & (minutes < _SESSION_CLOSE_MIN)
+    return (minutes >= profile.open_min) & (minutes < profile.close_min)
 
 
-def _in_session_fraction(ts: pd.Series) -> float:
-    return float(_in_session_mask(ts).mean())
+def _in_session_fraction(ts: pd.Series, profile: MarketProfile = NSE) -> float:
+    return float(_in_session_mask(ts, profile).mean())
 
 
-def _align_to_ist_session(df: pd.DataFrame) -> pd.DataFrame:
+def _align_to_ist_session(df: pd.DataFrame, profile: MarketProfile = NSE) -> pd.DataFrame:
     """Return naive-IST timestamps. The epoch's timezone basis is verified from the data
-    itself: NSE bars must fall within 09:15-15:30 IST, so try the raw timestamps and the
+    itself: bars must fall within the profile's session (NSE 09:15-15:30 IST), so try the raw timestamps and the
     UTC->IST shift and keep whichever fits. If neither fits, refuse rather than guess -
     a shifted clock would silently corrupt every session-based feature."""
     if df.empty:
         return df
     for shift in (pd.Timedelta(0), pd.Timedelta(hours=5, minutes=30)):
         shifted = df["timestamp"] + shift
-        if _in_session_fraction(shifted) >= 0.98:
+        if _in_session_fraction(shifted, profile) >= 0.98:
             out = df.copy()
             out["timestamp"] = shifted
             # Drop stray pre/post-close prints (e.g. zero-volume 15:30/15:35 bars).
-            return out[_in_session_mask(out["timestamp"])].reset_index(drop=True)
+            return out[_in_session_mask(out["timestamp"], profile)].reset_index(drop=True)
     raise RuntimeError(
-        "Dhan intraday timestamps do not align with the NSE 09:15-15:30 IST session under "
+        f"Dhan intraday timestamps do not align with the {profile.name} {profile.label} session under "
         "any known timezone basis; refusing to use them."
     )
 

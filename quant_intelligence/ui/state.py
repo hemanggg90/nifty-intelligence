@@ -13,7 +13,7 @@ import streamlit as st
 
 from quant_intelligence.brokers.dhan_api_client import DhanApiClient
 from quant_intelligence.config.settings import SETTINGS
-from quant_intelligence.execution.engine import ENGINE
+from quant_intelligence.execution.engine import COMMODITY_RUNNER, ENGINE
 from quant_intelligence.risk.risk_engine import AccountState
 
 
@@ -42,17 +42,19 @@ def init_session_state() -> None:
 
 def render_engine_sidebar() -> None:
     """Visible on every page: shows the background auto-trader and lets you stop it."""
-    status = ENGINE.status()
     with st.sidebar:
-        if status["running"]:
-            st.success("Auto paper trading is RUNNING (keeps running while you switch pages)")
+        for runner, label in ((ENGINE, "NSE"), (COMMODITY_RUNNER, "Commodities")):
+            status = runner.status()
+            if not status["running"]:
+                continue
+            st.success(f"{label} auto paper trading is RUNNING (keeps running while you switch pages)")
             st.caption(
                 f"Cycles: {status['cycles']} | Last: "
                 f"{status['last_cycle_at']:%H:%M:%S} IST" if status["last_cycle_at"] else "No cycle completed yet"
             )
             st.caption(status["last_status"])
-            if st.button("Stop auto trading", key="sidebar_stop_engine"):
-                ENGINE.stop()
+            if st.button(f"Stop {label} auto trading", key=f"sidebar_stop_{runner.name}"):
+                runner.stop()
                 st.rerun()
 
 

@@ -12,9 +12,11 @@ from __future__ import annotations
 import datetime as dt
 from zoneinfo import ZoneInfo
 
+from quant_intelligence.utils.market_profile import NSE, MarketProfile
+
 IST = ZoneInfo("Asia/Kolkata")
-SESSION_OPEN = dt.time(9, 15)
-SESSION_CLOSE = dt.time(15, 30)
+SESSION_OPEN = NSE.open
+SESSION_CLOSE = NSE.close
 
 
 def _to_ist(moment: dt.datetime) -> dt.datetime:
@@ -23,13 +25,14 @@ def _to_ist(moment: dt.datetime) -> dt.datetime:
     return moment.astimezone(IST)
 
 
-def most_recent_expected_bar_time(now: dt.datetime) -> dt.datetime:
+def most_recent_expected_bar_time(now: dt.datetime, profile: MarketProfile = NSE) -> dt.datetime:
     """The most recent point in time a live feed would have produced a bar.
 
     Within a weekday trading session, that's `now` itself. Outside session
     hours (or on a weekend), it's the close of the most recent trading day
     on or before `now`. The result is tz-aware in IST.
     """
+    SESSION_OPEN, SESSION_CLOSE = profile.open, profile.close
     ist_now = _to_ist(now)
     candidate = ist_now
 

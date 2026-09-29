@@ -30,6 +30,7 @@ from quant_intelligence.data.quality import (
 )
 from quant_intelligence.utils.logging_utils import log_event
 from quant_intelligence.utils.market_calendar import most_recent_expected_bar_time
+from quant_intelligence.utils.market_profile import profile_for
 
 CACHE_DIR = Path(DATA_CACHE_DIR) / "parquet_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -71,7 +72,7 @@ class DataManager:
             in_range = cached[(cached["timestamp"] >= start) & (cached["timestamp"] <= end)]
             if len(in_range) > 0:
                 last_cached = in_range["timestamp"].max().to_pydatetime()
-                reference = most_recent_expected_bar_time(end)
+                reference = most_recent_expected_bar_time(end, profile_for(instrument))
                 if last_cached.tzinfo is None:
                     last_cached = last_cached.replace(tzinfo=reference.tzinfo)
                 cache_is_fresh = (reference - last_cached) <= dt.timedelta(
@@ -121,14 +122,15 @@ class DataManager:
         tf_minutes = _parse_timeframe_minutes(timeframe)
         # Measure misalignment BEFORE cleaning: clean_ohlcv drops out-of-session bars, which
         # would otherwise hide a wholesale timezone error.
+        profile = profile_for(instrument)
         misaligned = 0
         if tf_minutes < 1440 and len(df):
-            misaligned = int(out_of_session_mask(df["timestamp"]).sum())
-        df = clean_ohlcv(df, tf_minutes)
-        report = validate_ohlcv(df, tf_minutes)
+            misaligned = int(out_of_session_mask(df["timestamp"], profile).sum())
+        df = clean_ohlcv(df, tf_minutes, profile)
+        report = validate_ohlcv(df, tf_minutes, profile=profile)
         if misaligned / max(len(df) + misaligned, 1) > MAX_OUT_OF_SESSION_FRACTION:
             report.status = QUALITY_FAIL
-            report.issues.append(f"{misaligned} bars outside the 09:15-15:30 session before cleaning (timezone/data error)")
+            report.issues.append(f"{misaligned} bars outside the {profile.label} session before cleaning (timezone/data error)")
 
         metadata = {
             "instrument": instrument,

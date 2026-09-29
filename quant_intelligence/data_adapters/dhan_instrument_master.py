@@ -30,6 +30,7 @@ _COL_EXPIRY = "SEM_EXPIRY_DATE"
 
 _cache: dict[str, dict] | None = None
 _fno_cache: dict[str, dict] | None = None
+_mcx_cache: dict[str, dict] | None = None
 
 
 def _cache_is_fresh() -> bool:
@@ -165,8 +166,9 @@ def resolve_derivative_lot_specs(symbol: str) -> dict | None:
 def resolve_fno_stock(symbol: str) -> dict | None:
     """Returns {"security_id", "seg", "strike_step", "lot_size"} for an NSE F&O stock
     underlying, or None if it has no listed stock options. Dhan's option-chain API
-    takes the stock underlying's own security_id (as indices use their IDX_I id) but with
-    UnderlyingSeg=NSE_FNO (NSE_EQ is rejected with error 814), so this reuses `resolve_equity` for the id.
+    takes the stock underlying's own security_id (as indices use their IDX_I id), so this reuses
+    `resolve_equity` for the id. Dhan accepts UnderlyingSeg NSE_FNO or NSE_EQ for stocks (both verified
+    live); the id must be sent as an integer, which DhanApiClient does.
     """
     symbol = symbol.strip().upper()
     fno_info = _load_fno_index().get(symbol)
@@ -186,3 +188,90 @@ def resolve_fno_stock(symbol: str) -> dict | None:
 def list_fno_stock_symbols() -> list[str]:
     """Sorted list of all NSE stock symbols that currently have listed options."""
     return sorted(symbol for symbol, entry in _load_fno_index().items() if entry["is_stock"])
+
+
+def _parse_expiry_date(raw: str) -> dt.date | None:
+    """Scrip-master expiries are 'YYYY-MM-DD' for NSE but 'YYYY-MM-DD HH:MM:SS' for MCX."""
+    try:
+        return dt.date.fromisoformat(raw.strip()[:10])
+    except ValueError:
+        return None
+
+
+def _load_mcx_index() -> dict[str, dict]:
+    """MCX commodity futures (FUTCOM) indexed by underlying symbol, nearest expiry first.
+
+    Commodity options are written on the futures contract, so the option-chain API takes a
+    FUTCOM security_id as its UnderlyingScrip (segment MCX_COMM). Only the futures that
+    have not yet expired are kept. Option strike_step is the minimum strike gap on the
+    nearest option expiry, as for NSE underlyings.
+    """
+    global _mcx_cache
+    if _mcx_cache is not None:
+        return _mcx_cache
+
+    if not _ensure_scrip_master():
+        _mcx_cache = {}
+        return _mcx_cache
+
+    today = dt.date.today()
+    futures: dict[str, list[tuple[dt.date, str]]] = {}
+    option_strikes: dict[str, dict[dt.date, set[float]]] = {}
+    with open(_CACHE_FILE, newline="", encoding="utf-8", errors="replace") as f:
+        for row in csv.DictReader(f):
+            if row.get(_COL_SEGMENT, "").strip().upper() != "MCX":
+                continue
+            instrument = row.get(_COL_INSTRUMENT, "").strip().upper()
+            if instrument not in ("FUTCOM", "OPTFUT"):
+                continue
+            symbol = row.get("SM_SYMBOL_NAME", "").strip().upper() or row.get(_COL_SYMBOL, "").split("-", 1)[0].strip().upper()
+            expiry = _parse_expiry_date(row.get(_COL_EXPIRY, ""))
+            if not symbol or expiry is None or expiry < today:
+                continue
+            if instrument == "FUTCOM":
+                futures.setdefault(symbol, []).append((expiry, row.get(_COL_SECURITY_ID, "").strip()))
+            else:
+                try:
+                    strike = float(row.get(_COL_STRIKE, "") or "nan")
+                except ValueError:
+                    continue
+                option_strikes.setdefault(symbol, {}).setdefault(expiry, set()).add(strike)
+
+    index: dict[str, dict] = {}
+    for symbol, contracts in futures.items():
+        contracts.sort()
+        by_expiry = option_strikes.get(symbol, {})
+        strikes = sorted(by_expiry[min(by_expiry)]) if by_expiry else []
+        gaps = [round(b - a, 2) for a, b in zip(strikes, strikes[1:]) if b > a]
+        index[symbol] = {
+            "security_ids": [sid for _, sid in contracts],
+            "strike_step": min(gaps) if gaps else 1.0,
+            "has_options": bool(by_expiry),
+        }
+    _mcx_cache = index
+    return _mcx_cache
+
+
+def resolve_mcx(symbol: str) -> dict | None:
+    """Returns {"security_id", "security_ids", "seg", "strike_step", "lot_size"} for a supported
+    MCX commodity that has listed options, or None. `security_id` is the front-month future;
+    `security_ids` lists the unexpired futures in expiry order so a caller can fall back to the
+    next month when the front one has no live option expiries left.
+
+    lot_size is the exchange contract multiplier from config.watchlist, not the scrip master
+    (which reports 1 for every MCX contract).
+    """
+    from quant_intelligence.config.watchlist import COMMODITY_LOT_SIZES
+
+    symbol = symbol.strip().upper()
+    lot_size = COMMODITY_LOT_SIZES.get(symbol)
+    entry = _load_mcx_index().get(symbol)
+    if lot_size is None or entry is None or not entry["has_options"] or not entry["security_ids"]:
+        return None
+    return {
+        "security_id": entry["security_ids"][0],
+        "security_ids": entry["security_ids"],
+        "seg": "MCX_COMM",
+        "strike_step": entry["strike_step"],
+        "lot_size": lot_size,
+    }

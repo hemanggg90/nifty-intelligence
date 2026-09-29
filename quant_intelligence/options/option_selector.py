@@ -49,6 +49,7 @@ def get_underlying_info(underlying: str) -> dict:
     from quant_intelligence.data_adapters.dhan_instrument_master import (
         resolve_derivative_lot_specs,
         resolve_fno_stock,
+        resolve_mcx,
     )
 
     underlying = underlying.strip().upper()
@@ -57,10 +58,11 @@ def get_underlying_info(underlying: str) -> dict:
         fresh_specs = resolve_derivative_lot_specs(underlying)
         return {**static_info, **fresh_specs} if fresh_specs is not None else static_info
 
-    info = resolve_fno_stock(underlying)
+    info = resolve_fno_stock(underlying) or resolve_mcx(underlying)
     if info is None:
         raise OptionSelectionError(
-            f"Underlying '{underlying}' has no registered index entry and no listed NSE F&O stock options"
+            f"Underlying '{underlying}' has no registered index entry, no listed NSE F&O stock options "
+            "and is not a supported MCX commodity with listed options"
         )
     return info
 
@@ -100,9 +102,14 @@ def fetch_chain(client, underlying: str, expiry_preference: str = "NEAREST") -> 
     index or any NSE F&O stock (see get_underlying_info). Makes real network calls via
     `client` (a DhanApiClient)."""
     info = get_underlying_info(underlying)
-    expiries = client.get_expiry_list(info["security_id"], info["seg"])
+    # MCX options sit on a futures contract; once the front-month future has no live option
+    # expiry left, the next month's future carries the chain.
+    for security_id in info.get("security_ids", [info["security_id"]])[:2]:
+        expiries = client.get_expiry_list(security_id, info["seg"])
+        if expiries:
+            break
     expiry = resolve_expiry(expiries, expiry_preference)
-    raw = client.get_option_chain(info["security_id"], info["seg"], expiry)
+    raw = client.get_option_chain(security_id, info["seg"], expiry)
     return parse_option_chain(underlying, expiry, raw)
 
 

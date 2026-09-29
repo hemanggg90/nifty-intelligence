@@ -29,6 +29,8 @@ import datetime as dt
 import numpy as np
 import pandas as pd
 
+from quant_intelligence.utils.market_profile import NSE, MarketProfile
+
 FEATURE_DEFINITIONS: dict[str, str] = {
     "return_1": "1-bar log return: ln(close_t / close_{t-1})",
     "return_5": "5-bar log return",
@@ -89,7 +91,7 @@ FEATURE_DEFINITIONS: dict[str, str] = {
 DERIVATIVE_PLACEHOLDER_COLUMNS = ["futures_basis", "oi", "oi_change_pct", "pcr", "iv", "iv_percentile"]
 
 
-def compute_features(df: pd.DataFrame) -> pd.DataFrame:
+def compute_features(df: pd.DataFrame, profile: MarketProfile = NSE) -> pd.DataFrame:
     """Compute the full feature vector for each bar. Input df must have OHLCV columns
     sorted ascending by timestamp. Returns a new DataFrame aligned to df's index with
     a `timestamp` column plus all feature columns.
@@ -124,7 +126,7 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     ret1 = out["return_1"]
-    realized_vol_20 = ret1.rolling(20, min_periods=20).std() * np.sqrt(252 * 75)  # ~75 5-min bars/session
+    realized_vol_20 = ret1.rolling(20, min_periods=20).std() * np.sqrt(252 * profile.session_minutes / 5)  # 5-min bars/session (NSE: 75)
     out["realized_vol_20"] = realized_vol_20
     out["vol_expansion"] = realized_vol_20 / realized_vol_20.rolling(100, min_periods=20).mean()
 
@@ -162,7 +164,7 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     def phase(m):
         if m <= 30:
             return "OPEN"
-        if m >= 345:  # last 30 min of a 375-min NSE session
+        if m >= profile.session_minutes - 30:  # last 30 min of the session
             return "CLOSE"
         return "MID"
 

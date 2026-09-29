@@ -19,6 +19,25 @@ import pandas as pd
 from quant_intelligence.brokers.paper_broker import PaperBroker
 from quant_intelligence.regimes.regime_engine import classify_regime
 from quant_intelligence.utils.logging_utils import log_event
+from quant_intelligence.utils.market_profile import profile_for
+
+
+def _fetch_quotes(api_client, positions: list[dict]) -> dict:
+    """Live quotes for option positions keyed by security_id (as str). One LTP call covering
+    every exchange segment involved, so NSE and MCX positions are both priced."""
+    by_segment: dict[str, list[int]] = {}
+    for p in positions:
+        if not p.get("security_id"):
+            continue
+        segment = profile_for(p.get("underlying") or p.get("instrument")).option_segment
+        by_segment.setdefault(segment, []).append(int(p["security_id"]))
+    if not by_segment:
+        return {}
+    data = api_client.get_ltp({seg: sorted(set(ids)) for seg, ids in by_segment.items()}).get("data") or {}
+    quotes: dict = {}
+    for seg_quotes in data.values():
+        quotes.update({str(k): v for k, v in (seg_quotes or {}).items()})
+    return quotes
 
 
 def monitor_positions(broker: PaperBroker, latest_bar: pd.Series) -> list[dict]:
@@ -61,11 +80,10 @@ def monitor_option_positions(broker: PaperBroker, api_client) -> list[dict]:
     if not by_security_id:
         return events
 
-    ltp_response = api_client.get_ltp({"NSE_FNO": [int(sid) for sid in by_security_id]})
-    quotes = (ltp_response.get("data") or {}).get("NSE_FNO", {})
+    quotes = _fetch_quotes(api_client, option_positions)
 
     for security_id, pos in by_security_id.items():
-        quote = quotes.get(str(security_id)) or quotes.get(security_id)
+        quote = quotes.get(str(security_id))
         if not quote:
             continue
         premium = quote.get("last_price")
@@ -102,11 +120,10 @@ def fetch_option_ltp_map(broker: PaperBroker, api_client) -> dict:
     if not security_ids:
         return {}
 
-    ltp_response = api_client.get_ltp({"NSE_FNO": [int(sid) for sid in security_ids]})
-    quotes = (ltp_response.get("data") or {}).get("NSE_FNO", {})
+    quotes = _fetch_quotes(api_client, option_positions)
     ltp_map = {}
     for sid in security_ids:
-        quote = quotes.get(str(sid)) or quotes.get(sid)
+        quote = quotes.get(str(sid))
         if quote and quote.get("last_price") is not None:
             ltp_map[sid] = quote["last_price"]
     return ltp_map

@@ -9,9 +9,9 @@ from __future__ import annotations
 import datetime as dt
 from zoneinfo import ZoneInfo
 
+from quant_intelligence.utils.market_profile import NSE, MarketProfile
+
 IST = ZoneInfo("Asia/Kolkata")
-_OPEN = dt.time(9, 15)
-_CLOSE = dt.time(15, 30)
 
 
 def now_ist() -> dt.datetime:
@@ -23,7 +23,8 @@ def today_ist() -> dt.date:
     return now_ist().date()
 
 
-def is_market_open(moment: dt.datetime | None = None) -> bool:
-    """Weekday 09:15-15:30 IST. Exchange holidays are not modelled."""
+def is_market_open(moment: dt.datetime | None = None, profile: MarketProfile = NSE) -> bool:
+    """Weekday within the profile's session (NSE 09:15-15:30 IST by default). Exchange holidays
+    are not modelled."""
     moment = moment or now_ist()
-    return moment.weekday() < 5 and _OPEN <= moment.time() < _CLOSE
+    return moment.weekday() < 5 and profile.open <= moment.time() < profile.close

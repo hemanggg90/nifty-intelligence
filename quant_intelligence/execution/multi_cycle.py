@@ -8,7 +8,9 @@ apply the returned P&L to their own session state.
 """
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
+from quant_intelligence.utils.market_profile import profile_for
 from quant_intelligence.utils.timeutil import now_ist
 from typing import Callable
 
@@ -27,8 +29,16 @@ def run_multi_instrument_cycle(
     broker,
     client,
     get_account: Callable,
+    broker_lock=None,
+    on_fill: Callable | None = None,
 ) -> tuple[list[dict], float]:
-    """Returns (result rows, realised P&L from positions closed during the cycle)."""
+    """Returns (result rows, realised P&L from positions closed during the cycle).
+
+    `broker_lock` (an RLock shared by every runner using this broker) is held only around the
+    steps that read cash/positions and place orders, so scans on different watchlists overlap
+    while capital checks and fills stay atomic. `on_fill` is called once per filled order.
+    """
+    broker_lock = broker_lock if broker_lock is not None else contextlib.nullcontext()
     account = get_account()
     end = now_ist()
     start = end - dt.timedelta(days=lookback_days)
@@ -38,6 +48,8 @@ def run_multi_instrument_cycle(
     all_symbols = [(s, "index") for s in index_symbols] + [(s, "stock") for s in stock_symbols]
 
     for symbol, kind in all_symbols:
+        if profile_for(symbol).name == "MCX":
+            kind = "commodity"
         try:
             output = run_pipeline(symbol, timeframe, start, end)
         except Exception as e:
@@ -60,9 +72,13 @@ def run_multi_instrument_cycle(
                 )
                 continue
 
-        cycle = run_auto_option_cycle(output, symbol, broker, client, chain, account)
-        if cycle.order is not None:
-            account = get_account()  # re-sync exposure/trade-count after a fill
+        with broker_lock:
+            account = get_account()  # fresh cash/exposure: another runner may have filled meanwhile
+            cycle = run_auto_option_cycle(output, symbol, broker, client, chain, account)
+            if cycle.order is not None:
+                if on_fill is not None and cycle.order.status == "FILLED":
+                    on_fill()
+                account = get_account()  # re-sync exposure/trade-count after a fill
         rows.append(
             {
                 "symbol": symbol,
@@ -79,8 +95,9 @@ def run_multi_instrument_cycle(
     # (not only right after a new fill), so exits are never skipped on quiet cycles.
     if client.is_configured():
         try:
-            for e in monitor_option_positions(broker, client):
-                pnl_delta += e["position"]["net_pnl"]
+            with broker_lock:
+                for e in monitor_option_positions(broker, client):
+                    pnl_delta += e["position"]["net_pnl"]
         except Exception as e:
             rows.append({"symbol": "-", "type": "monitor", "strategy": "-", "status": "MONITOR_ERROR", "detail": str(e)})
     return rows, pnl_delta

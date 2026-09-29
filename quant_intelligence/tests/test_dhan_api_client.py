@@ -75,3 +75,20 @@ def test_unconfigured_client_raises_before_network_call(monkeypatch):
         with pytest.raises(DhanApiError):
             client.get_fund_limit()
         mock_get.assert_not_called()
+
+
+def test_option_chain_requests_send_underlying_scrip_as_an_integer():
+    """Scrip-master ids are strings; Dhan answers 400/814 'Invalid Request' unless it is an int."""
+    from unittest.mock import MagicMock, patch
+
+    from quant_intelligence.brokers.dhan_api_client import DhanApiClient
+
+    resp = MagicMock(ok=True)
+    resp.json.return_value = {"data": []}
+    client = DhanApiClient("id", "tok")
+    with patch("quant_intelligence.brokers.dhan_api_client.requests.post", return_value=resp) as post, \
+            patch.object(client, "_throttle_option_chain"):
+        client.get_expiry_list("11536", "NSE_FNO")
+        client.get_option_chain("569900", "MCX_COMM", "2026-10-15")
+    assert post.call_args_list[0].kwargs["json"]["UnderlyingScrip"] == 11536
+    assert post.call_args_list[1].kwargs["json"]["UnderlyingScrip"] == 569900
