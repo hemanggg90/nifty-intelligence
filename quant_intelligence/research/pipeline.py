@@ -86,6 +86,12 @@ def run_pipeline(
     )
 
     strategies = get_all_strategies()
+    if float(ohlcv["volume"].fillna(0).sum()) <= 0:
+        # No traded volume (e.g. index candles): volume features are NaN and NaN comparisons
+        # silently pass, so volume-dependent strategies would emit unreliable signals.
+        skipped = [s.name for s in strategies if _uses_volume(s)]
+        strategies = [s for s in strategies if not _uses_volume(s)]
+        log_event("pipeline", f"No volume in data; skipped volume-dependent strategies: {skipped}", level="WARNING")
     strategy_intel: list[StrategyIntelligence] = []
     scores: list[StrategyScore] = []
 
@@ -133,6 +139,13 @@ def run_pipeline(
         strategy_intel=strategy_intel,
         ranking=ranking,
     )
+
+
+_VOLUME_FEATURES = {"relative_volume", "volume_acceleration", "vwap", "vwap_distance_pct"}
+
+
+def _uses_volume(strategy) -> bool:
+    return bool(_VOLUME_FEATURES & set(strategy.required_features)) or "volume" in strategy.name.lower()
 
 
 def _observations_to_df(backtest: BacktestResult, features: pd.DataFrame) -> pd.DataFrame:

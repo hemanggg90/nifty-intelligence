@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from quant_intelligence.backtesting.engine import run_backtest, walk_forward
-from quant_intelligence.data.data_manager import DataManager
+from quant_intelligence.data.data_manager import DataManager, DataUnavailableError
 from quant_intelligence.features.feature_engine import compute_features
 from quant_intelligence.strategies.registry import STRATEGY_CLASSES, get_strategy
 from quant_intelligence.ui.theme import apply_theme
@@ -46,7 +46,11 @@ if run:
     start = end - dt.timedelta(days=lookback_days)
     dm = DataManager()
     with st.spinner("Fetching data and computing features..."):
-        ohlcv, metadata = dm.get_ohlcv(instrument, timeframe, start, end)
+        try:
+            ohlcv, metadata = dm.get_ohlcv(instrument, timeframe, start, end)
+        except DataUnavailableError as e:
+            st.error(str(e))
+            st.stop()
         if len(ohlcv) < 100:
             st.error("Not enough data for the selected window.")
             st.stop()

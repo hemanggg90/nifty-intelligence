@@ -70,6 +70,13 @@ def validate_ohlcv(
     if n_missing_candles > 0:
         issues.append(f"{n_missing_candles} intra-session gaps larger than expected bar interval")
 
+    n_out_of_session = 0
+    if timeframe_minutes < 1440:
+        minutes_of_day = ts.dt.hour * 60 + ts.dt.minute
+        n_out_of_session = int(((minutes_of_day < 9 * 60 + 15) | (minutes_of_day >= 15 * 60 + 30)).sum())
+        if n_out_of_session > 0:
+            issues.append(f"{n_out_of_session} bars outside the 09:15-15:30 session (timezone/data error)")
+
     zero_or_neg = (df[["open", "high", "low", "close"]] <= 0).any(axis=1)
     n_zero_or_negative = int(zero_or_neg.sum())
     if n_zero_or_negative > 0:
@@ -101,7 +108,7 @@ def validate_ohlcv(
         issues.append(f"data is stale: last bar at {last_timestamp}, expected as of {reference}")
 
     # Determine overall status.
-    hard_fail = n_zero_or_negative > 0 or n_ohlc_violations > 0 or n_rows < 5
+    hard_fail = n_zero_or_negative > 0 or n_ohlc_violations > 0 or n_rows < 5 or n_out_of_session > 0
     degraded = n_duplicates > 0 or n_missing_candles > 0 or n_missing_volume > 0 or is_stale
 
     if hard_fail:

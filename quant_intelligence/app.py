@@ -57,7 +57,7 @@ output = st.session_state.get("pipeline_output")
 error = st.session_state.get("pipeline_error")
 
 if output is None and error is None:
-    with st.spinner("Running initial pipeline (synthetic/CSV data, no API keys required)..."):
+    with st.spinner("Running initial pipeline on live Dhan / CSV market data..."):
         output = run_pipeline_cached()
         error = st.session_state.get("pipeline_error")
 

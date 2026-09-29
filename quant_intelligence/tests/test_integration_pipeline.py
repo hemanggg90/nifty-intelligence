@@ -9,7 +9,18 @@ from quant_intelligence.risk.risk_engine import AccountState, ProposedTrade, eva
 from quant_intelligence.strategies.registry import STRATEGY_CLASSES, get_strategy
 
 
-def test_full_pipeline_end_to_end():
+def test_full_pipeline_end_to_end(monkeypatch, tmp_path):
+    # Production has no synthetic fallback; feed the pipeline synthetic candles for this test only.
+    from quant_intelligence.data import data_manager as dm_module
+    from quant_intelligence.data.data_manager import DataManager
+    from quant_intelligence.data_adapters.synthetic import SyntheticAdapter
+
+    monkeypatch.setattr(dm_module, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(
+        DataManager, "_fetch",
+        lambda self, instrument, timeframe, start, end, prefer: (
+            "test", SyntheticAdapter().get_ohlcv(instrument, timeframe, start, end)),
+    )
     end = dt.datetime(2024, 6, 28, 15, 30)
     start = end - dt.timedelta(days=60)
 
@@ -79,3 +90,15 @@ def test_bad_data_quality_prevents_trade_end_to_end(monkeypatch):
     scores = [score_strategy({"strategy_name": "A", "confidence_label": "HIGH", "sample_size": 500, "expected_r": 2.0, "prob_positive_return": 0.9}, -1)]
     decision = rank_and_select(scores, data_quality_status="FAIL")
     assert decision.is_no_trade
+
+
+def test_no_data_source_raises_instead_of_fabricating(monkeypatch, tmp_path):
+    import pytest
+    from quant_intelligence.data import data_manager as dm_module
+    from quant_intelligence.data.data_manager import DataManager, DataUnavailableError
+
+    monkeypatch.setattr(dm_module, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(DataManager, "_fetch", lambda self, *a: ("none", __import__("pandas").DataFrame()))
+    end = dt.datetime(2024, 6, 28, 15, 30)
+    with pytest.raises(DataUnavailableError):
+        DataManager().get_ohlcv("NIFTY", "5min", end - dt.timedelta(days=5), end)

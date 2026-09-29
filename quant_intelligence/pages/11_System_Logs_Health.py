@@ -26,7 +26,7 @@ except Exception:
 col1.metric("Database", "OK" if db_ok else "FAIL")
 
 dhan = DhanAdapter()
-col2.metric("Dhan Data API", "CONFIGURED" if dhan.is_available() else "NOT CONFIGURED (using synthetic/CSV)")
+col2.metric("Dhan Data API", "CONFIGURED" if dhan.is_available() else "NOT CONFIGURED (no market data without CSV)")
 
 broker = st.session_state["paper_broker"]
 col3.metric("Broker (Paper)", "CONNECTED" if broker.is_connected() else "DISCONNECTED")

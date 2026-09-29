@@ -1,10 +1,10 @@
 """
 DataManager: unified entry point for fetching OHLCV data.
 
-Order of preference: CSV/Parquet (if the user has dropped reproducible
-research data into data_cache/csv) -> Dhan (if credentials configured) ->
-Synthetic (always available, clearly labelled). Results are cached to
-Parquet in data_cache/ so repeated requests don't re-fetch/re-generate data.
+Order of preference: CSV/Parquet (if the user has dropped real market data
+into data_cache/csv) -> Dhan (if credentials configured). There is NO
+synthetic fallback: if neither source yields data, DataUnavailableError is
+raised. Results are cached to Parquet in data_cache/parquet_cache.
 
 Every fetch runs through data-quality validation and records a
 MarketDataMetadata row so the system has an auditable record of what data
@@ -20,7 +20,7 @@ import pandas as pd
 from quant_intelligence.config.settings import DATA_CACHE_DIR
 from quant_intelligence.data_adapters.csv_adapter import CSVAdapter
 from quant_intelligence.data_adapters.dhan_adapter import DhanAdapter
-from quant_intelligence.data_adapters.synthetic import SyntheticAdapter, _parse_timeframe_minutes
+from quant_intelligence.data_adapters.synthetic import _parse_timeframe_minutes
 from quant_intelligence.data.quality import validate_ohlcv, clean_ohlcv, QUALITY_FAIL
 from quant_intelligence.utils.logging_utils import log_event
 from quant_intelligence.utils.market_calendar import most_recent_expected_bar_time
@@ -34,11 +34,15 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_STALENESS_THRESHOLD_MINUTES = 30
 
 
+class DataUnavailableError(RuntimeError):
+    """No real market data source (CSV or Dhan) could supply the requested data."""
+
+
 class DataManager:
     def __init__(self):
         self.csv_adapter = CSVAdapter()
         self.dhan_adapter = DhanAdapter()
-        self.synthetic_adapter = SyntheticAdapter()
+        self._last_errors: list[str] = []
 
     def _cache_path(self, instrument: str, timeframe: str) -> Path:
         return CACHE_DIR / f"{instrument}_{timeframe}.parquet"
@@ -73,29 +77,37 @@ class DataManager:
                     return self._finalize(df, instrument, timeframe, source)
 
         source, df = self._fetch(instrument, timeframe, start, end, prefer_source)
-        if len(df) > 0:
-            df.to_parquet(cache_path, index=False)
+        if len(df) == 0:
+            reasons = "; ".join(self._last_errors) or "no CSV data found and Dhan is not configured"
+            raise DataUnavailableError(
+                f"No real market data for {instrument} {timeframe}: {reasons}. "
+                "Set your Dhan credentials in the sidebar or add CSV files to data_cache/csv."
+            )
+        df.to_parquet(cache_path, index=False)
         return self._finalize(df, instrument, timeframe, source)
 
     def _fetch(self, instrument, timeframe, start, end, prefer_source) -> tuple[str, pd.DataFrame]:
         order = [prefer_source] if prefer_source else []
-        order += ["csv", "dhan", "synthetic"]
+        order += ["csv", "dhan"]
+        self._last_errors = []
 
         for source in order:
             if source == "csv" and self.csv_adapter.is_available():
                 df = self.csv_adapter.get_ohlcv(instrument, timeframe, start, end)
                 if len(df) > 0:
                     return "csv", df
-            elif source == "dhan" and self.dhan_adapter.is_available():
+            elif source == "dhan":
+                if not self.dhan_adapter.is_available():
+                    self._last_errors.append("Dhan credentials not set")
+                    continue
                 try:
                     df = self.dhan_adapter.get_ohlcv(instrument, timeframe, start, end)
                     if len(df) > 0:
                         return "dhan", df
+                    self._last_errors.append("Dhan returned no rows")
                 except Exception as e:
                     log_event("data_manager", f"Dhan fetch failed: {e}", level="WARNING")
-            elif source == "synthetic":
-                df = self.synthetic_adapter.get_ohlcv(instrument, timeframe, start, end)
-                return "synthetic", df
+                    self._last_errors.append(str(e))
         return "none", pd.DataFrame()
 
     def _finalize(self, df: pd.DataFrame, instrument: str, timeframe: str, source: str) -> tuple[pd.DataFrame, dict]:

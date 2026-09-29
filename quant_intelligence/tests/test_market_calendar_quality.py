@@ -37,7 +37,7 @@ def test_most_recent_expected_bar_time_weekend_returns_last_friday_close():
 
 
 def test_validate_ohlcv_not_stale_when_last_bar_matches_prior_session_close():
-    last_bar = dt.datetime(2026, 9, 21, 15, 30)  # Monday close
+    last_bar = dt.datetime(2026, 9, 21, 15, 25)  # Monday last 5-min bar (closes 15:30)
     df = _ohlcv(last_bar)
     now = dt.datetime(2026, 9, 21, 20, 29)  # same evening, well past raw 30-min wall-clock threshold
     report = validate_ohlcv(df, timeframe_minutes=5, now=now)
@@ -46,8 +46,8 @@ def test_validate_ohlcv_not_stale_when_last_bar_matches_prior_session_close():
 
 
 def test_validate_ohlcv_still_stale_when_genuinely_behind_during_market_hours():
-    last_bar = dt.datetime(2026, 9, 21, 9, 30)  # early in the session
-    df = _ohlcv(last_bar)
+    last_bar = dt.datetime(2026, 9, 21, 9, 50)  # early in the session
+    df = _ohlcv(last_bar, n=8)
     now = dt.datetime(2026, 9, 21, 14, 0)  # same session, hours later, still no new bars
     report = validate_ohlcv(df, timeframe_minutes=5, now=now)
     assert report.status == QUALITY_DEGRADED
