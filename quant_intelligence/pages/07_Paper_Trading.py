@@ -10,6 +10,7 @@ import streamlit as st
 from quant_intelligence.brokers.base_broker import OrderRequest
 from quant_intelligence.config.settings import SETTINGS
 from quant_intelligence.execution.auto_trader import run_auto_option_cycle
+from quant_intelligence.execution.capital import capital_summary
 from quant_intelligence.execution.position_monitor import (
     fetch_option_ltp_map,
     monitor_option_positions,
@@ -198,7 +199,7 @@ else:
 
                 amount_needed = premium_setup.entry_price * quantity
                 max_loss = abs(premium_setup.entry_price - premium_setup.stop_price) * quantity
-                available = st.session_state["paper_broker"].cash
+                available = capital_summary(st.session_state["paper_broker"])["available"]
                 ac1, ac2, ac3 = st.columns(3)
                 ac1.metric("Amount needed" if transaction == "BUY" else "Premium value (margin extra)", f"₹{amount_needed:,.0f}")
                 ac2.metric("Risk at stop", f"₹{max_loss:,.0f}")

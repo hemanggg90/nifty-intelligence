@@ -8,7 +8,7 @@ class _Client:
         return False
 
 
-def test_multi_cycle_scans_every_symbol_and_isolates_failures(monkeypatch):
+def test_multi_cycle_scans_every_symbol_as_options_and_isolates_failures(monkeypatch):
     seen = []
 
     def fake_pipeline(symbol, timeframe, start, end):
@@ -17,10 +17,9 @@ def test_multi_cycle_scans_every_symbol_and_isolates_failures(monkeypatch):
             raise RuntimeError("no data")
         return SimpleNamespace(ranking=SimpleNamespace(is_no_trade=True, selected_strategy=None), ohlcv=None)
 
-    no_trade = SimpleNamespace(order=None, strategy_name=None, setup_status=None, reason="NO TRADE")
+    no_trade = SimpleNamespace(order=None, strategy_name=None, setup_status=None, reason="NO TRADE", capital_required=None, capital_used=0.0)
     monkeypatch.setattr(multi_cycle, "run_pipeline", fake_pipeline)
     monkeypatch.setattr(multi_cycle, "run_auto_option_cycle", lambda *a, **k: no_trade)
-    monkeypatch.setattr(multi_cycle, "run_auto_equity_cycle", lambda *a, **k: no_trade)
 
     rows, pnl = multi_cycle.run_multi_instrument_cycle(
         ["NIFTY", "BANKNIFTY"], ["TCS", "BAD", "INFY"], "5min", 30, broker=None, client=_Client(), get_account=lambda: None
@@ -29,3 +28,18 @@ def test_multi_cycle_scans_every_symbol_and_isolates_failures(monkeypatch):
     assert seen == ["NIFTY", "BANKNIFTY", "TCS", "BAD", "INFY"]  # indices and all stocks, in one pass
     assert [r["status"] for r in rows].count("DATA_ERROR") == 1  # one bad symbol doesn't stop the rest
     assert len(rows) == 5 and pnl == 0.0
+
+
+def test_every_instrument_incl_stocks_goes_through_the_option_cycle(monkeypatch):
+    routed = []
+    no_trade = SimpleNamespace(order=None, strategy_name=None, setup_status=None, reason="NO TRADE", capital_required=None, capital_used=0.0)
+    monkeypatch.setattr(
+        multi_cycle, "run_pipeline",
+        lambda *a: SimpleNamespace(ranking=SimpleNamespace(is_no_trade=True, selected_strategy=None), ohlcv=None),
+    )
+    monkeypatch.setattr(multi_cycle, "run_auto_option_cycle", lambda output, symbol, *a, **k: routed.append(symbol) or no_trade)
+
+    multi_cycle.run_multi_instrument_cycle(
+        ["NIFTY"], ["TCS", "INFY"], "5min", 30, broker=None, client=_Client(), get_account=lambda: None
+    )
+    assert routed == ["NIFTY", "TCS", "INFY"]

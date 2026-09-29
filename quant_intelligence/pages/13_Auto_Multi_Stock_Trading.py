@@ -1,11 +1,8 @@
 """Auto Multi-Instrument Trading.
 
-Single unified scanner: NIFTY/BANKNIFTY (traded via options, since indices have
-no cash-market instrument) and a fixed ~200-stock NSE equity universe (traded
-direct, cash-market) are pipelined, ranked, and automated together in one pass -
-instead of index options (07_Paper_Trading/12_Live_Options_Trading) and stocks
-(this page, formerly stocks-only) being separate, disconnected flows. Every
-instrument shares one combined ranked table and one PaperBroker/RiskEngine.
+NIFTY/BANKNIFTY and the fixed stock watchlist (config/watchlist.py) are pipelined, ranked and
+automated together in one pass, and EVERY trade is an option (index and stock options alike).
+All instruments share one combined result table and one PaperBroker/RiskEngine.
 """
 import sys
 from pathlib import Path
@@ -22,7 +19,7 @@ apply_theme()
 init_session_state()
 st.title("Auto Multi-Instrument Trading")
 st.caption(
-    "ONE UNIVERSE: index (NIFTY/BANKNIFTY, via options) + the fixed stock watchlist (cash-market) -> "
+    "ONE UNIVERSE: NIFTY/BANKNIFTY + the fixed stock watchlist, ALL traded as options -> "
     "PER-INSTRUMENT PIPELINE -> RANKING -> RISK ENGINE -> PAPER BROKER (simulated)."
 )
 render_multi_instrument_panel()

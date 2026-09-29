@@ -27,6 +27,7 @@ from quant_intelligence.options.chain_analytics import ChainSnapshot
 from quant_intelligence.options.option_selector import OptionSelectionError, get_underlying_info, select_contract
 from quant_intelligence.options.premium_model import PremiumSizingError, translate_setup
 from quant_intelligence.research.pipeline import PipelineOutput
+from quant_intelligence.execution.capital import capital_required, capital_summary
 from quant_intelligence.risk.risk_engine import AccountState, ProposedTrade, evaluate_trade
 from quant_intelligence.strategies.registry import CHAIN_AWARE_STRATEGY_NAMES, get_strategy
 
@@ -39,6 +40,8 @@ class AutoCycleResult:
     order: OrderAck | None = None
     risk_decision_id: str | None = None
     reason: str = ""
+    capital_required: float | None = None  # premium x quantity to BUY the resolved contract
+    capital_used: float = 0.0  # capital actually committed by a filled BUY order
 
 
 def size_position(account: AccountState, entry_price: float, stop_price: float, lot_size: int = 1) -> int:
@@ -116,6 +119,16 @@ def run_auto_option_cycle(
         result.reason = "Position sizing produced zero quantity (equity too small or stop too wide)."
         return result
 
+    result.capital_required = capital_required(premium_setup.entry_price, quantity)
+    if transaction == "BUY":
+        available = capital_summary(broker)["available"]
+        if result.capital_required > available:
+            result.reason = (
+                f"Insufficient funds: needs Rs {result.capital_required:,.0f}, "
+                f"Rs {available:,.0f} available."
+            )
+            return result
+
     proposed = ProposedTrade(
         strategy_name=strategy_name,
         direction=setup.direction,
@@ -154,6 +167,8 @@ def run_auto_option_cycle(
     )
     result.order = broker.place_order(order, market_price=premium_setup.entry_price)
     result.reason = f"Order {result.order.status}"
+    if result.order.status == "FILLED" and transaction == "BUY":
+        result.capital_used = result.capital_required
     return result
 
 
