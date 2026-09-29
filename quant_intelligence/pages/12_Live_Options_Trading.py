@@ -131,6 +131,19 @@ lots = st.number_input("Lots", min_value=1, value=1, step=1)
 quantity = int(lots) * contract.lot_size
 st.caption(f"Order quantity: {lots} lot(s) x {contract.lot_size} = {quantity}")
 
+amount_needed = premium_setup.entry_price * quantity
+max_loss = abs(premium_setup.entry_price - premium_setup.stop_price) * quantity
+try:
+    available = float(broker.get_fund_limit().get("availabelBalance", 0.0))
+except Exception:
+    available = None
+ac1, ac2, ac3 = st.columns(3)
+ac1.metric("Amount needed" if transaction == "BUY" else "Premium value (margin extra)", f"₹{amount_needed:,.0f}")
+ac2.metric("Risk at stop", f"₹{max_loss:,.0f}")
+ac3.metric("Available funds", f"₹{available:,.0f}" if available is not None else "-")
+if transaction == "BUY" and available is not None and amount_needed > available:
+    st.warning("Amount needed exceeds available funds.")
+
 confirm = st.checkbox("I have validated this strategy in Paper Trading and want to place a REAL order.")
 
 if st.button("Submit to Risk Engine -> DhanBroker (LIVE)", type="primary", disabled=not confirm):

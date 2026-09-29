@@ -37,6 +37,7 @@ with tab1:
             "Transaction": p.transaction,
             "Qty": p.quantity,
             "Entry": p.entry_price,
+            "Amount Used": round(p.entry_price * p.quantity, 2) if p.entry_price and p.quantity else None,
             "Stop": p.stop_price,
             "Target": p.target_price,
             "Status": p.status,
@@ -47,6 +48,8 @@ with tab1:
         }
         for p in positions
     ]
+    open_used = sum(r["Amount Used"] or 0 for r, p in zip(rows, positions) if p.status == "OPEN")
+    st.metric("Amount currently deployed (open positions)", f"₹{open_used:,.0f}")
     st.dataframe(rows, width="stretch", hide_index=True)
     if rows:
         st.download_button(
