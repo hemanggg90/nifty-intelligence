@@ -88,7 +88,7 @@ class PaperBroker(BaseBroker):
         )
         return ack
 
-    def close_position(self, position_id: str, exit_price: float) -> dict | None:
+    def close_position(self, position_id: str, exit_price: float, reason: str | None = None) -> dict | None:
         pos = self.positions.get(position_id)
         if pos is None or pos["status"] != "OPEN":
             return None
@@ -103,6 +103,8 @@ class PaperBroker(BaseBroker):
         pos["closed_at"] = now_ist()
         pos["exit_price"] = exit_price
         pos["net_pnl"] = net_pnl
+        if reason:
+            pos["exit_reason"] = reason
         self.cash += net_pnl
         self._persist_position(pos)
         return pos

@@ -93,6 +93,9 @@ class Settings:
     # Automation
     auto_trade_refresh_seconds: int = _int_env("AUTO_TRADE_REFRESH_SECONDS", 60)
     ltp_refresh_seconds: int = _int_env("LTP_REFRESH_SECONDS", 5)
+    # Close each market's open paper positions shortly before its close (see execution/square_off.py).
+    eod_square_off: bool = _bool_env("EOD_SQUARE_OFF", True)
+    eod_square_off_minutes: int = _int_env("EOD_SQUARE_OFF_MINUTES", 5)
 
     # NSE heatmap-sourced stock universe (see data_adapters/nse_heatmap.py)
     heatmap_index: str = os.getenv("HEATMAP_INDEX", "NIFTY 50")

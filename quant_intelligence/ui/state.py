@@ -30,6 +30,7 @@ def init_session_state() -> None:
         st.session_state["pipeline_error"] = None
     # The paper account, risk counters and kill switch are process-wide (ENGINE), not per
     # browser session, so the background auto-trader and every page see the same account.
+    ENGINE.restore_from_db()  # no-op after the first call in this process
     st.session_state["paper_broker"] = ENGINE.broker
     if "dhan_api_client" not in st.session_state:
         st.session_state["dhan_api_client"] = DhanApiClient()

@@ -219,6 +219,7 @@ def test_kill_switch_is_shared_and_gate_uses_each_runners_own_session(monkeypatc
     _fake_cycle(monkeypatch, calls)
     seen_profiles = []
     monkeypatch.setattr(engine_module, "is_market_open", lambda profile=NSE, **kw: seen_profiles.append(profile) or profile is MCX)
+    monkeypatch.setattr(engine_module, "in_close_window", lambda *a: False)
     nse = engine_module.TradingEngine()
     mcx = engine_module.ScanRunner("commodities", MCX, owner=nse)
 

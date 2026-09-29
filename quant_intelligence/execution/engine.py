@@ -14,12 +14,14 @@ may call `st.*`.
 """
 from __future__ import annotations
 
+import datetime as dt
 import threading
 
 from quant_intelligence.brokers.dhan_api_client import DhanApiClient
 from quant_intelligence.brokers.paper_broker import PaperBroker
 from quant_intelligence.config.settings import SETTINGS
 from quant_intelligence.execution.multi_cycle import run_multi_instrument_cycle
+from quant_intelligence.execution.square_off import in_close_window, square_off_positions
 from quant_intelligence.risk.risk_engine import AccountState
 from quant_intelligence.utils.logging_utils import log_event
 from quant_intelligence.utils.market_profile import MCX, NSE, MarketProfile
@@ -71,6 +73,12 @@ class ScanRunner:
             self.cycles += 1
             return rows
 
+    def square_off_now(self) -> list[dict]:
+        """Close this market's open positions at their latest price (end of session, or on demand).
+        Safe to call from the UI thread; prices are fetched outside the broker lock."""
+        owner = self.owner
+        return square_off_positions(owner.broker, DhanApiClient(), self.profile, owner.lock, owner.add_pnl)
+
     def start(self, index_symbols, stock_symbols, timeframe: str, lookback_days: int,
               interval_seconds: int | None = None, market_hours_only: bool = True) -> bool:
         with self.owner.lock:
@@ -103,8 +111,19 @@ class ScanRunner:
     def _loop(self, stop, index_symbols, stock_symbols, timeframe, lookback_days, interval) -> None:
         while not stop.is_set():
             try:
-                if self.market_hours_only and not is_market_open(profile=self.profile):
+                market_open = is_market_open(profile=self.profile)
+                closing = SETTINGS.eod_square_off and in_close_window(
+                    now_ist(), self.profile, SETTINGS.eod_square_off_minutes
+                )
+                if self.market_hours_only and SETTINGS.eod_square_off and (closing or not market_open):
+                    # Session ending or over: flatten this market's positions (also catches ones left
+                    # from before a restart) instead of leaving them open with a frozen price.
+                    self.square_off_now()
+                if self.market_hours_only and not market_open:
                     self.last_status = f"Market closed - waiting for {self.profile.open:%H:%M} IST"
+                elif self.market_hours_only and closing:
+                    # No new trades in the last minutes: they would be squared off again immediately.
+                    self.last_status = "Closing window - positions squared off, no new trades"
                 elif self.owner.kill_switch:
                     self.last_status = "Kill switch engaged - not trading"
                 else:
@@ -142,6 +161,58 @@ class TradingEngine(ScanRunner):
         self.daily_pnl = 0.0
         self.peak_equity = SETTINGS.paper_starting_capital
         self._day = today_ist()
+        self._restored = False
+
+    # ---- restart recovery ------------------------------------------------------
+    def restore_from_db(self) -> None:
+        """Rebuild today's book from the database after a process restart (idempotent).
+
+        The broker lives in memory, so a restart used to empty it while the database kept the rows
+        as OPEN - positions nobody monitored, and daily loss / trade-count limits that silently reset.
+        Today's positions are reloaded; cash is starting capital + today's realised P&L, and the
+        daily counters are restored. OPEN rows from an earlier day can never be priced or closed
+        properly, so they are marked STALE (kept, never deleted) rather than left looking live.
+        """
+        with self.lock:
+            if self._restored:
+                return
+            self._restored = True
+            try:
+                from quant_intelligence.database.db import get_session, init_db
+                from quant_intelligence.database.models import Position
+
+                init_db()  # a page can be the first thing loaded; make sure new columns exist
+                day_start = dt.datetime.combine(today_ist(), dt.time.min)
+                cols = [c.name for c in Position.__table__.columns if c.name != "id"]
+                with get_session() as session:
+                    stale = session.query(Position).filter(
+                        Position.status == "OPEN",
+                        (Position.opened_at < day_start) | (Position.opened_at.is_(None)),
+                    ).all()
+                    for row in stale:
+                        row.status = "STALE"
+                        row.exit_reason = "STALE_ON_RESTART"
+                    today_rows = [
+                        {c: getattr(r, c) for c in cols}
+                        for r in session.query(Position).filter(Position.opened_at >= day_start).all()
+                    ]
+                realised = 0.0
+                for d in today_rows:
+                    self.broker.positions[d["position_id"]] = d
+                    if d["status"] == "CLOSED" and d.get("net_pnl") is not None:
+                        realised += d["net_pnl"]
+                self.trades_today = len(today_rows)
+                self.daily_pnl = realised
+                self.broker.cash = self.broker.capital + realised
+                self.peak_equity = max(self.peak_equity, self.broker.cash)
+                log_event(
+                    "engine",
+                    f"Restored {sum(1 for d in today_rows if d['status'] == 'OPEN')} open position(s) and "
+                    f"{len(today_rows)} trade(s) from today; marked {len(stale)} older OPEN row(s) STALE",
+                    level="INFO",
+                )
+            except Exception as e:  # never block startup on recovery
+                log_event("engine", f"Could not restore paper book from the database: {e}", level="ERROR")
 
     # ---- shared risk counters ------------------------------------------------
     def _roll_day(self) -> None:

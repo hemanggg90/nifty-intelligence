@@ -101,12 +101,13 @@ def render_multi_instrument_panel(runner: ScanRunner = ENGINE, commodities: bool
     status = runner.status()
 
     market_only = st.checkbox(
-        f"Only trade during market hours (Mon-Fri {runner.profile.label})",
+        f"Only trade during market hours (Mon-Fri {runner.profile.label}); open positions are squared off "
+        f"{SETTINGS.eod_square_off_minutes} min before the close",
         value=runner.market_hours_only,
         disabled=status["running"],
         key=key + "market_only",
     )
-    b1, b2, _ = st.columns([1, 1, 2])
+    b1, b2, b3, _ = st.columns([1, 1, 1, 1])
     if not status["running"]:
         if b1.button("Start auto trading", type="primary", key=key + "start"):
             runner.start(index_symbols, stock_symbols, timeframe, lookback_days, market_hours_only=market_only)
@@ -115,6 +116,11 @@ def render_multi_instrument_panel(runner: ScanRunner = ENGINE, commodities: bool
         if b1.button("Stop auto trading", type="primary", key=key + "stop"):
             runner.stop()
             st.rerun()
+    if b3.button("Square off open positions", key=key + "squareoff",
+                 help=f"Close every open {runner.profile.name} position now at its latest price"):
+        with st.spinner("Closing positions..."):
+            closed = runner.square_off_now()
+        st.toast(f"Closed {len(closed)} position(s)") if closed else st.toast("Nothing closed (no open positions, or no live price)")
     if b2.button("Run one cycle now", disabled=status["running"], key=key + "once"):
         with st.spinner("Scanning all instruments..."):
             runner.run_cycle(index_symbols, stock_symbols, timeframe, lookback_days)

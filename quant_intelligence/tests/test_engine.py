@@ -77,6 +77,7 @@ def test_waits_outside_market_hours_and_when_kill_switch_engaged(monkeypatch):
     eng.stop()
 
     monkeypatch.setattr(engine_module, "is_market_open", lambda **kw: True)
+    monkeypatch.setattr(engine_module, "in_close_window", lambda *a: False)
     eng = TradingEngine()
     eng.kill_switch = True
     eng.start(["NIFTY"], [], "5min", 30, interval_seconds=0.05, market_hours_only=True)

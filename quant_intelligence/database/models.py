@@ -262,11 +262,12 @@ class Position(Base):
     entry_price = Column(Float)
     stop_price = Column(Float)
     target_price = Column(Float)
-    status = Column(String(16))  # OPEN / CLOSED
+    status = Column(String(16))  # OPEN / CLOSED / STALE (left open by an earlier day, never closed)
     opened_at = Column(DateTime)
     closed_at = Column(DateTime)
     exit_price = Column(Float)
     net_pnl = Column(Float)
+    exit_reason = Column(String(32))  # STOP / TARGET / EOD_SQUARE_OFF / MANUAL / STALE_ON_RESTART
     mode = Column(String(8))
     underlying = Column(String(32))
     security_id = Column(String(32))

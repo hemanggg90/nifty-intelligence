@@ -56,11 +56,11 @@ def monitor_positions(broker: PaperBroker, latest_bar: pd.Series) -> list[dict]:
         hit_target = (latest_bar["high"] >= target) if direction == "LONG" else (latest_bar["low"] <= target)
 
         if hit_stop:
-            closed = broker.close_position(pos["position_id"], stop)
+            closed = broker.close_position(pos["position_id"], stop, "STOP")
             events.append({"type": "STOP_HIT", "position": closed})
             log_event("position_monitor", f"Stop hit for {pos['position_id']}", level="INFO")
         elif hit_target:
-            closed = broker.close_position(pos["position_id"], target)
+            closed = broker.close_position(pos["position_id"], target, "TARGET")
             events.append({"type": "TARGET_HIT", "position": closed})
             log_event("position_monitor", f"Target hit for {pos['position_id']}", level="INFO")
 
@@ -101,11 +101,11 @@ def monitor_option_positions(broker: PaperBroker, api_client) -> list[dict]:
             hit_target = premium <= target
 
         if hit_stop:
-            closed = broker.close_position(pos["position_id"], stop)
+            closed = broker.close_position(pos["position_id"], stop, "STOP")
             events.append({"type": "STOP_HIT", "position": closed})
             log_event("position_monitor", f"Option premium stop hit for {pos['position_id']}", level="INFO")
         elif hit_target:
-            closed = broker.close_position(pos["position_id"], target)
+            closed = broker.close_position(pos["position_id"], target, "TARGET")
             events.append({"type": "TARGET_HIT", "position": closed})
             log_event("position_monitor", f"Option premium target hit for {pos['position_id']}", level="INFO")
 
