@@ -60,7 +60,7 @@ def test_resolve_fno_stock_uses_min_strike_gap_on_nearest_expiry(tmp_path, monke
     csv_path = _write_fno_scrip_master(tmp_path)
     with _patch_scrip_master(monkeypatch, csv_path):
         info = mod.resolve_fno_stock("reliance")
-        assert info == {"security_id": "2885", "seg": "NSE_EQ", "strike_step": 40.0, "lot_size": 500}
+        assert info == {"security_id": "2885", "seg": "NSE_FNO", "strike_step": 40.0, "lot_size": 500}
 
 
 def test_resolve_fno_stock_returns_none_for_index_symbol(tmp_path, monkeypatch):

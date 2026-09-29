@@ -165,8 +165,8 @@ def resolve_derivative_lot_specs(symbol: str) -> dict | None:
 def resolve_fno_stock(symbol: str) -> dict | None:
     """Returns {"security_id", "seg", "strike_step", "lot_size"} for an NSE F&O stock
     underlying, or None if it has no listed stock options. Dhan's option-chain API
-    takes a stock underlying's own NSE_EQ security_id (same shape indices take their
-    IDX_I security_id), so this reuses `resolve_equity` for the id/segment.
+    takes the stock underlying's own security_id (as indices use their IDX_I id) but with
+    UnderlyingSeg=NSE_FNO (NSE_EQ is rejected with error 814), so this reuses `resolve_equity` for the id.
     """
     symbol = symbol.strip().upper()
     fno_info = _load_fno_index().get(symbol)
@@ -177,7 +177,7 @@ def resolve_fno_stock(symbol: str) -> dict | None:
         return None
     return {
         "security_id": equity_info["security_id"],
-        "seg": "NSE_EQ",
+        "seg": "NSE_FNO",
         "strike_step": fno_info["strike_step"],
         "lot_size": fno_info["lot_size"],
     }
