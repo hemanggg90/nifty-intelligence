@@ -14,6 +14,7 @@ from quant_intelligence.config.settings import SETTINGS
 from quant_intelligence.config.watchlist import WATCHLIST_COMMODITIES, WATCHLIST_STOCKS
 from quant_intelligence.execution.capital import capital_summary
 from quant_intelligence.execution.engine import ENGINE, ScanRunner
+from quant_intelligence.ui.live_positions import render_live_positions
 
 
 def _show_capital(runner: ScanRunner) -> None:
@@ -122,8 +123,4 @@ def render_multi_instrument_panel(runner: ScanRunner = ENGINE, commodities: bool
 
     st.divider()
     st.subheader("Open positions (all pages share the same paper broker)")
-    open_positions = runner.owner.broker.get_open_positions()
-    if open_positions:
-        st.dataframe(open_positions, width="stretch", hide_index=True)
-    else:
-        st.caption("No open paper positions.")
+    render_live_positions()

@@ -155,4 +155,33 @@ def clean_ohlcv(df: pd.DataFrame, timeframe_minutes: int | None = None, profile:
         df = df[~out_of_session_mask(df["timestamp"], profile)]
     df = df.drop_duplicates(subset="timestamp", keep="last")
     df = df.sort_values("timestamp").reset_index(drop=True)
+    if timeframe_minutes is not None and timeframe_minutes < 1440 and len(df):
+        df = _drop_bad_opening_bars(df)
     return df
+
+
+def _ohlc_violation_mask(df: pd.DataFrame) -> pd.Series:
+    return (
+        (df["high"] < df["low"])
+        | (df["close"] > df["high"])
+        | (df["close"] < df["low"])
+        | (df["open"] > df["high"])
+        | (df["open"] < df["low"])
+    )
+
+
+def _drop_bad_opening_bars(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop OHLC-inconsistent bars that are the FIRST bar of a session.
+
+    Dhan occasionally reports an opening bar whose open lies outside its own high-low range
+    (seen on MCX silver at 09:00 - the exchange's opening-call price). Dropping it loses one bar
+    and leaves no intra-session gap (the next bar simply becomes the first). The same violation
+    anywhere else in a session is still left in place so validate_ohlcv hard-fails it.
+    """
+    is_first = df.groupby(pd.to_datetime(df["timestamp"]).dt.date).cumcount() == 0
+    drop = _ohlc_violation_mask(df) & is_first
+    if drop.any():
+        from quant_intelligence.utils.logging_utils import log_event
+
+        log_event("data_quality", f"Dropped {int(drop.sum())} inconsistent session-opening bar(s)", level="WARNING")
+    return df[~drop].reset_index(drop=True)

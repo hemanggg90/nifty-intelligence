@@ -252,3 +252,22 @@ def test_option_chain_throttle_is_shared_across_clients(monkeypatch):
     a._throttle_option_chain()
     b._throttle_option_chain()  # a different client, immediately after
     assert sleeps and sleeps[-1] > 2.0
+
+
+def test_inconsistent_session_opening_bar_is_dropped_but_mid_session_violations_still_fail():
+    from quant_intelligence.data.quality import QUALITY_FAIL, clean_ohlcv, validate_ohlcv
+
+    def frame(bad_at):
+        ts = list(pd.date_range("2026-09-07 09:00", periods=12, freq="5min")) + \
+            list(pd.date_range("2026-09-08 09:00", periods=12, freq="5min"))
+        df = pd.DataFrame({"timestamp": ts, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 10.0})
+        df.loc[bad_at, "open"] = 95.0  # open below the bar's own low
+        return df
+
+    opening = frame(12)  # 09:00 on the second day: Dhan's opening-call quirk
+    cleaned = clean_ohlcv(opening, 5, MCX)
+    assert len(cleaned) == 23 and validate_ohlcv(cleaned, 5, now=dt.datetime(2026, 9, 8, 10, 0), profile=MCX).status != QUALITY_FAIL
+
+    mid = clean_ohlcv(frame(15), 5, MCX)  # same violation mid-session is left in
+    assert len(mid) == 24
+    assert validate_ohlcv(mid, 5, now=dt.datetime(2026, 9, 8, 10, 0), profile=MCX).status == QUALITY_FAIL

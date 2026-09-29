@@ -9,6 +9,7 @@ import streamlit as st
 
 from quant_intelligence.database.db import get_session
 from quant_intelligence.database.models import Fill, Order, Position
+from quant_intelligence.ui.live_positions import render_live_positions
 from quant_intelligence.ui.state import init_session_state
 from quant_intelligence.ui.theme import apply_theme
 
@@ -25,6 +26,10 @@ with get_session() as session:
 tab1, tab2, tab3 = st.tabs(["Positions", "Orders", "Fills"])
 
 with tab1:
+    st.subheader("Live open positions")
+    render_live_positions()
+    st.subheader("All positions (audit trail)")
+    st.caption("Net P&L below is filled in when a position closes; live P&L for open ones is shown above.")
     rows = [
         {
             "Position ID": p.position_id,
