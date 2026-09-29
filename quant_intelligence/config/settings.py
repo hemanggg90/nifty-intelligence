@@ -46,6 +46,9 @@ def _int_env(name: str, default: int) -> int:
 @dataclass(frozen=True)
 class RiskLimits:
     max_risk_per_trade_pct: float = _float_env("MAX_RISK_PER_TRADE_PCT", 1.0)
+    # Ceiling on the capital (premium x quantity) committed to ONE trade, as % of equity. Risk-based
+    # sizing alone lets a tight stop produce a huge quantity; 0 disables the cap.
+    max_capital_per_trade_pct: float = _float_env("MAX_CAPITAL_PER_TRADE_PCT", 5.0)
     max_daily_loss_pct: float = _float_env("MAX_DAILY_LOSS_PCT", 3.0)
     max_strategy_exposure_pct: float = _float_env("MAX_STRATEGY_EXPOSURE_PCT", 10.0)
     max_portfolio_exposure_pct: float = _float_env("MAX_PORTFOLIO_EXPOSURE_PCT", 20.0)

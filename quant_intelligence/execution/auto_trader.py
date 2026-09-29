@@ -49,7 +49,9 @@ def size_position(account: AccountState, entry_price: float, stop_price: float, 
     """Quantity such that the risk-engine's per-trade risk check passes by construction.
 
     Uses 90% of `max_risk_per_trade_pct` as headroom against rounding, since
-    the final `quantity` is rounded down to a whole number of lots.
+    the final `quantity` is rounded down to a whole number of lots. The result is then capped so
+    entry_price x quantity never exceeds `max_capital_per_trade_pct` of equity: a tight stop makes
+    the risk-based quantity huge (e.g. 8 lots of natural gas), which the risk budget alone allows.
     """
     stop_distance = abs(entry_price - stop_price)
     if stop_distance <= 0 or account.equity <= 0:
@@ -57,6 +59,10 @@ def size_position(account: AccountState, entry_price: float, stop_price: float, 
     budget = account.equity * (SETTINGS.risk.max_risk_per_trade_pct * 0.9) / 100.0
     raw_qty = budget / stop_distance
     lots = max(int(raw_qty // lot_size), 0)
+    cap_pct = SETTINGS.risk.max_capital_per_trade_pct
+    if cap_pct > 0 and entry_price > 0:
+        capital_budget = account.equity * cap_pct / 100.0
+        lots = min(lots, int(capital_budget // (entry_price * lot_size)))
     return lots * lot_size
 
 
@@ -117,7 +123,7 @@ def run_auto_option_cycle(
 
     quantity = size_position(account, premium_setup.entry_price, premium_setup.stop_price, contract.lot_size)
     if quantity <= 0:
-        result.reason = "Position sizing produced zero quantity (equity too small or stop too wide)."
+        result.reason = "Position sizing produced zero quantity (equity too small, stop too wide, or one lot exceeds the per-trade capital cap)."
         return result
 
     result.capital_required = capital_required(premium_setup.entry_price, quantity)
@@ -210,7 +216,7 @@ def run_auto_equity_cycle(output: PipelineOutput, broker: PaperBroker, account: 
     setup = setup_status.setup
     quantity = size_position(account, setup.entry_price, setup.stop_price)
     if quantity <= 0:
-        result.reason = "Position sizing produced zero quantity (equity too small or stop too wide)."
+        result.reason = "Position sizing produced zero quantity (equity too small, stop too wide, or one lot exceeds the per-trade capital cap)."
         return result
 
     proposed = ProposedTrade(

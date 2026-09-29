@@ -60,3 +60,24 @@ def test_auto_cycle_refuses_a_buy_it_cannot_afford(monkeypatch):
     assert result.capital_required == 5000.0
     assert "Insufficient funds" in result.reason
     assert broker.get_open_positions() == []
+
+
+def test_size_position_caps_capital_per_trade():
+    """Risk-based sizing alone gave 8 lots (Rs 1.85L, 18% of equity) for a tight natural-gas stop."""
+    from quant_intelligence.execution.auto_trader import size_position
+    from quant_intelligence.risk.risk_engine import AccountState
+
+    account = AccountState(
+        equity=1_000_000.0, peak_equity=1_000_000.0, daily_pnl=0.0, open_positions_count=0,
+        trades_today=0, exposure_by_strategy={}, total_exposure=0.0, broker_connected=True,
+        kill_switch_engaged=False,
+    )
+    # risk budget Rs 9,000 / 0.878 stop distance = 8 lots of 1250; the 5% cap (Rs 50,000) allows 2
+    qty = size_position(account, 18.5, 17.622, 1250)
+    assert qty == 2 * 1250
+    assert qty * 18.5 <= 1_000_000 * 0.05
+
+    # the risk budget still binds when it is the smaller limit (stop distance 5 -> 1800 units -> 1 lot)
+    assert size_position(account, 18.5, 13.5, 1250) == 1250
+    # a single lot dearer than the cap is not traded at all
+    assert size_position(account, 100.0, 99.0, 1250) == 0
