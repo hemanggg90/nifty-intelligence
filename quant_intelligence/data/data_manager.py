@@ -21,7 +21,13 @@ from quant_intelligence.config.settings import DATA_CACHE_DIR
 from quant_intelligence.data_adapters.csv_adapter import CSVAdapter
 from quant_intelligence.data_adapters.dhan_adapter import DhanAdapter
 from quant_intelligence.data_adapters.synthetic import _parse_timeframe_minutes
-from quant_intelligence.data.quality import validate_ohlcv, clean_ohlcv, QUALITY_FAIL
+from quant_intelligence.data.quality import (
+    MAX_OUT_OF_SESSION_FRACTION,
+    QUALITY_FAIL,
+    clean_ohlcv,
+    out_of_session_mask,
+    validate_ohlcv,
+)
 from quant_intelligence.utils.logging_utils import log_event
 from quant_intelligence.utils.market_calendar import most_recent_expected_bar_time
 
@@ -79,6 +85,7 @@ class DataManager:
         source, df = self._fetch(instrument, timeframe, start, end, prefer_source)
         if len(df) == 0:
             reasons = "; ".join(self._last_errors) or "no CSV data found and Dhan is not configured"
+            log_event("data_manager", f"No real data for {instrument} {timeframe}: {reasons}", level="ERROR")
             raise DataUnavailableError(
                 f"No real market data for {instrument} {timeframe}: {reasons}. "
                 "Set your Dhan credentials in the sidebar or add CSV files to data_cache/csv."
@@ -111,9 +118,17 @@ class DataManager:
         return "none", pd.DataFrame()
 
     def _finalize(self, df: pd.DataFrame, instrument: str, timeframe: str, source: str) -> tuple[pd.DataFrame, dict]:
-        df = clean_ohlcv(df)
         tf_minutes = _parse_timeframe_minutes(timeframe)
+        # Measure misalignment BEFORE cleaning: clean_ohlcv drops out-of-session bars, which
+        # would otherwise hide a wholesale timezone error.
+        misaligned = 0
+        if tf_minutes < 1440 and len(df):
+            misaligned = int(out_of_session_mask(df["timestamp"]).sum())
+        df = clean_ohlcv(df, tf_minutes)
         report = validate_ohlcv(df, tf_minutes)
+        if misaligned / max(len(df) + misaligned, 1) > MAX_OUT_OF_SESSION_FRACTION:
+            report.status = QUALITY_FAIL
+            report.issues.append(f"{misaligned} bars outside the 09:15-15:30 session before cleaning (timezone/data error)")
 
         metadata = {
             "instrument": instrument,

@@ -17,6 +17,12 @@ import pandas as pd
 
 from quant_intelligence.utils.market_calendar import most_recent_expected_bar_time
 
+SESSION_OPEN_MIN = 9 * 60 + 15
+SESSION_CLOSE_MIN = 15 * 60 + 30
+# More than this fraction of bars outside the session means the clock/timezone is wrong
+# (a real misalignment), as opposed to a few stray pre/post-close prints.
+MAX_OUT_OF_SESSION_FRACTION = 0.02
+
 QUALITY_OK = "OK"
 QUALITY_DEGRADED = "DEGRADED"
 QUALITY_FAIL = "FAIL"
@@ -39,6 +45,12 @@ class QualityReport:
         d = self.__dict__.copy()
         d["last_timestamp"] = str(self.last_timestamp) if self.last_timestamp else None
         return d
+
+
+def out_of_session_mask(timestamps: pd.Series) -> pd.Series:
+    ts = pd.to_datetime(timestamps)
+    minutes = ts.dt.hour * 60 + ts.dt.minute
+    return (minutes < SESSION_OPEN_MIN) | (minutes >= SESSION_CLOSE_MIN)
 
 
 def validate_ohlcv(
@@ -72,10 +84,11 @@ def validate_ohlcv(
 
     n_out_of_session = 0
     if timeframe_minutes < 1440:
-        minutes_of_day = ts.dt.hour * 60 + ts.dt.minute
-        n_out_of_session = int(((minutes_of_day < 9 * 60 + 15) | (minutes_of_day >= 15 * 60 + 30)).sum())
-        if n_out_of_session > 0:
+        n_out_of_session = int(out_of_session_mask(df["timestamp"]).sum())
+        if n_out_of_session / n_rows > MAX_OUT_OF_SESSION_FRACTION:
             issues.append(f"{n_out_of_session} bars outside the 09:15-15:30 session (timezone/data error)")
+        else:
+            n_out_of_session = 0  # a few stray pre/post-close prints; removed by clean_ohlcv
 
     zero_or_neg = (df[["open", "high", "low", "close"]] <= 0).any(axis=1)
     n_zero_or_negative = int(zero_or_neg.sum())
@@ -132,8 +145,11 @@ def validate_ohlcv(
     )
 
 
-def clean_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
-    """Deterministic cleanup: drop exact duplicate timestamps (keep last), sort, reset index."""
+def clean_ohlcv(df: pd.DataFrame, timeframe_minutes: int | None = None) -> pd.DataFrame:
+    """Deterministic cleanup: drop duplicate timestamps (keep last) and, for intraday
+    data, bars outside the 09:15-15:30 session (stray pre/post-close prints); sort, reset index."""
+    if timeframe_minutes is not None and timeframe_minutes < 1440 and len(df):
+        df = df[~out_of_session_mask(df["timestamp"])]
     df = df.drop_duplicates(subset="timestamp", keep="last")
     df = df.sort_values("timestamp").reset_index(drop=True)
     return df

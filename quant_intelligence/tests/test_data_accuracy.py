@@ -37,3 +37,34 @@ def test_forming_bar_is_dropped_but_closed_bar_kept():
 def test_out_of_session_bars_fail_quality():
     report = validate_ohlcv(_bars("2024-06-28 03:45", 20), 5, now=dt.datetime(2024, 6, 28, 10, 0))
     assert report.status == QUALITY_FAIL
+
+
+def _sessions(first_bar: str, days: int = 4) -> pd.DataFrame:
+    """`days` full 75-bar sessions starting at `first_bar` on 2024-06-24, 25, ..."""
+    hh, mm = first_bar.split(":")
+    frames = [_bars(f"2024-06-{24 + d} {hh}:{mm}", 75) for d in range(days)]
+    return pd.concat(frames).reset_index(drop=True)
+
+
+def test_stray_post_close_bars_are_dropped_not_fatal():
+    from quant_intelligence.data_adapters.dhan_adapter import _align_to_ist_session
+
+    utc = _sessions("03:45")  # 09:15-15:25 IST expressed in UTC
+    strays = _bars("2024-06-24 10:00", 2)  # 15:30, 15:35 IST
+    aligned = _align_to_ist_session(pd.concat([utc, strays]).reset_index(drop=True))
+    assert len(aligned) == len(utc)  # strays removed
+    report = validate_ohlcv(aligned, 5, now=dt.datetime(2024, 6, 27, 15, 30))
+    assert report.status != QUALITY_FAIL
+
+
+def test_finalize_fails_on_wholesale_misalignment_but_not_stray_bars():
+    from quant_intelligence.data.data_manager import DataManager
+
+    dm = DataManager()
+    _, meta = dm._finalize(_sessions("03:45"), "X", "5min", "test")  # UTC clock, never shifted
+    assert meta["quality_status"] == QUALITY_FAIL
+
+    stray = pd.concat([_sessions("09:15"), _bars("2024-06-24 15:30", 2)]).reset_index(drop=True)
+    df, meta = dm._finalize(stray, "X", "5min", "test")
+    assert meta["n_rows"] == 300
+    assert not any("outside" in i for i in meta["quality_report"]["issues"])

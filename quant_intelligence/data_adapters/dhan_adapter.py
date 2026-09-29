@@ -96,9 +96,13 @@ _SESSION_OPEN_MIN = 9 * 60 + 15
 _SESSION_CLOSE_MIN = 15 * 60 + 30
 
 
-def _in_session_fraction(ts: pd.Series) -> float:
+def _in_session_mask(ts: pd.Series) -> pd.Series:
     minutes = ts.dt.hour * 60 + ts.dt.minute
-    return float(((minutes >= _SESSION_OPEN_MIN) & (minutes < _SESSION_CLOSE_MIN)).mean())
+    return (minutes >= _SESSION_OPEN_MIN) & (minutes < _SESSION_CLOSE_MIN)
+
+
+def _in_session_fraction(ts: pd.Series) -> float:
+    return float(_in_session_mask(ts).mean())
 
 
 def _align_to_ist_session(df: pd.DataFrame) -> pd.DataFrame:
@@ -113,7 +117,8 @@ def _align_to_ist_session(df: pd.DataFrame) -> pd.DataFrame:
         if _in_session_fraction(shifted) >= 0.98:
             out = df.copy()
             out["timestamp"] = shifted
-            return out
+            # Drop stray pre/post-close prints (e.g. zero-volume 15:30/15:35 bars).
+            return out[_in_session_mask(out["timestamp"])].reset_index(drop=True)
     raise RuntimeError(
         "Dhan intraday timestamps do not align with the NSE 09:15-15:30 IST session under "
         "any known timezone basis; refusing to use them."
