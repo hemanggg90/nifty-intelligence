@@ -15,6 +15,7 @@ import streamlit as st
 
 from quant_intelligence.config.settings import SETTINGS
 from quant_intelligence.database.db import init_db
+from quant_intelligence.ui.credentials_panel import render_credentials_panel
 from quant_intelligence.ui.state import init_session_state, run_pipeline_cached
 from quant_intelligence.ui.theme import apply_theme, status_badge
 
@@ -35,6 +36,10 @@ with st.sidebar:
     if st.button("Refresh pipeline", type="primary"):
         with st.spinner("Running data -> features -> regime -> strategy ranking pipeline..."):
             run_pipeline_cached(force=True)
+
+    st.divider()
+    st.header("API Keys")
+    render_credentials_panel()
 
     st.divider()
     st.header("Trading Mode")

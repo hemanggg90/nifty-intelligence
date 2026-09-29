@@ -19,6 +19,7 @@ from quant_intelligence.options.option_selector import (
 from quant_intelligence.options.premium_model import PremiumSizingError, translate_setup
 from quant_intelligence.risk.risk_engine import ProposedTrade, evaluate_trade
 from quant_intelligence.strategies.registry import CHAIN_AWARE_STRATEGY_NAMES, get_strategy
+from quant_intelligence.ui.credentials_panel import render_credentials_panel
 from quant_intelligence.ui.state import get_live_account_state, init_session_state, run_pipeline_cached
 from quant_intelligence.ui.theme import apply_theme
 
@@ -47,7 +48,8 @@ if "dhan_broker" not in st.session_state:
 broker = st.session_state["dhan_broker"]
 
 if not broker.is_connected():
-    st.error("DhanBroker is not connected - set DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN in .env.")
+    st.error("DhanBroker is not connected - enter your Dhan Client ID and Access Token below.")
+    render_credentials_panel()
     st.stop()
 
 output = run_pipeline_cached()
