@@ -20,6 +20,7 @@ from quant_intelligence.options.premium_model import PremiumSizingError, transla
 from quant_intelligence.risk.risk_engine import ProposedTrade, evaluate_trade
 from quant_intelligence.strategies.registry import CHAIN_AWARE_STRATEGY_NAMES, get_strategy
 from quant_intelligence.ui.credentials_panel import render_credentials_panel
+from quant_intelligence.execution.engine import ENGINE
 from quant_intelligence.ui.state import get_live_account_state, init_session_state, run_pipeline_cached
 from quant_intelligence.ui.theme import apply_theme
 
@@ -184,7 +185,7 @@ if st.button("Submit to Risk Engine -> DhanBroker (LIVE)", type="primary", disab
             lot_size=contract.lot_size,
         )
         ack = broker.place_order(order)
-        st.session_state["trades_today"] += 1
+        ENGINE.add_trade()
         if ack.status in ("FILLED", "TRADED", "PENDING", "TRANSIT"):
             st.success(f"LIVE order {ack.status}: {contract.transaction} {order.quantity} {contract.trading_symbol} (order {ack.order_id})")
         else:

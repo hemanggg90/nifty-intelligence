@@ -1,5 +1,6 @@
 import sys
 import datetime as dt
+from quant_intelligence.utils.timeutil import now_ist
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
@@ -29,6 +30,7 @@ from quant_intelligence.options.premium_model import PremiumSizingError, transla
 from quant_intelligence.risk.risk_engine import ProposedTrade, evaluate_trade
 from quant_intelligence.strategies.registry import CHAIN_AWARE_STRATEGY_NAMES, get_strategy
 from quant_intelligence.ui.multi_instrument_panel import render_multi_instrument_panel
+from quant_intelligence.execution.engine import ENGINE
 from quant_intelligence.ui.state import get_account_state, init_session_state, run_pipeline_cached
 from quant_intelligence.ui.theme import apply_theme
 
@@ -98,17 +100,17 @@ if automate:
         if fresh_output is not None:
             account = get_account_state()
             cycle = run_auto_option_cycle(fresh_output, underlying, broker, client, chain_now, account)
-            st.caption(f"Last automated cycle ({dt.datetime.now():%H:%M:%S}): {cycle.reason}")
+            st.caption(f"Last automated cycle ({now_ist():%H:%M:%S}): {cycle.reason}")
             if cycle.order is not None:
-                st.session_state["trades_today"] += 1
+                ENGINE.add_trade()
                 latest_bar = fresh_output.ohlcv.iloc[-1]
                 events = monitor_positions(broker, latest_bar)
                 for e in events:
-                    st.session_state["daily_pnl"] += e["position"]["net_pnl"]
+                    ENGINE.add_pnl(e["position"]["net_pnl"])
             if client.is_configured():
                 option_events = monitor_option_positions(broker, client)
                 for e in option_events:
-                    st.session_state["daily_pnl"] += e["position"]["net_pnl"]
+                    ENGINE.add_pnl(e["position"]["net_pnl"])
 
     _auto_fragment()
     st.divider()
@@ -128,7 +130,7 @@ if client.is_configured() and live_ltp and not automate:
             cc2.metric("ATM strike", chain_now.atm_strike)
             cc3.metric("Total PCR", round(chain_now.total_pcr, 2) if chain_now.total_pcr else "-")
             cc4.metric("ATM IV", round(chain_now.atm_iv, 2) if chain_now.atm_iv else "-")
-        st.caption(f"Live prices updated {dt.datetime.now():%H:%M:%S} (every {SETTINGS.ltp_refresh_seconds}s)")
+        st.caption(f"Live prices updated {now_ist():%H:%M:%S} (every {SETTINGS.ltp_refresh_seconds}s)")
 
     _live_chain_fragment()
 else:
@@ -245,7 +247,7 @@ else:
                             lot_size=contract.lot_size,
                         )
                         ack = broker.place_order(order, market_price=premium_setup.entry_price)
-                        st.session_state["trades_today"] += 1
+                        ENGINE.add_trade()
                         if ack.status == "FILLED":
                             st.success(f"Paper order FILLED: {contract.transaction} {order.quantity} {contract.trading_symbol} @ {ack.fill_price:.2f} (order {ack.order_id})")
                         else:
@@ -260,7 +262,7 @@ if mc1.button("Check underlying stop/target hits"):
     if events:
         for e in events:
             st.write(f"{e['type']}: {e['position']['position_id']} closed @ {e['position']['exit_price']}, net P&L {e['position']['net_pnl']:.2f}")
-            st.session_state["daily_pnl"] += e["position"]["net_pnl"]
+            ENGINE.add_pnl(e["position"]["net_pnl"])
     else:
         st.info("No stop/target hits on the latest bar.")
 
@@ -269,7 +271,7 @@ if mc2.button("Check option premium stop/target hits (live LTP)", disabled=not c
     if events:
         for e in events:
             st.write(f"{e['type']}: {e['position']['position_id']} closed @ {e['position']['exit_price']}, net P&L {e['position']['net_pnl']:.2f}")
-            st.session_state["daily_pnl"] += e["position"]["net_pnl"]
+            ENGINE.add_pnl(e["position"]["net_pnl"])
     else:
         st.info("No option stop/target hits at current LTP.")
 
@@ -279,14 +281,14 @@ if client.is_configured() and live_ltp and not automate:
     def _positions_ltp_fragment():
         events = monitor_option_positions(broker, client)
         for e in events:
-            st.session_state["daily_pnl"] += e["position"]["net_pnl"]
+            ENGINE.add_pnl(e["position"]["net_pnl"])
         ltp_map = fetch_option_ltp_map(broker, client)
         rows = positions_with_live_ltp(broker, ltp_map)
         if rows:
             st.dataframe(rows, width="stretch", hide_index=True)
         else:
             st.caption("No open paper positions.")
-        st.caption(f"Live LTP updated {dt.datetime.now():%H:%M:%S} (every {SETTINGS.ltp_refresh_seconds}s)")
+        st.caption(f"Live LTP updated {now_ist():%H:%M:%S} (every {SETTINGS.ltp_refresh_seconds}s)")
 
     _positions_ltp_fragment()
 else:

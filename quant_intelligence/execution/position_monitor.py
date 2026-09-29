@@ -12,6 +12,7 @@ strategy switching).
 from __future__ import annotations
 
 import datetime as dt
+from quant_intelligence.utils.timeutil import now_ist
 
 import pandas as pd
 
@@ -140,7 +141,7 @@ def reassess_regime_validity(position: dict, current_features: dict, entry_regim
         "current_regime": current_label,
         "regime_changed": changed,
         "current_regime_confidence": max(probs.values()) if probs else None,
-        "checked_at": dt.datetime.now(),
+        "checked_at": now_ist(),
     }
     if changed:
         log_event(

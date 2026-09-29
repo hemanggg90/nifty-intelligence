@@ -14,6 +14,7 @@ itself can NEVER send a real order, by construction (no network calls here).
 from __future__ import annotations
 
 import datetime as dt
+from quant_intelligence.utils.timeutil import now_ist
 import uuid
 
 from quant_intelligence.brokers.base_broker import BaseBroker, OrderAck, OrderRequest
@@ -36,7 +37,7 @@ class PaperBroker(BaseBroker):
 
     def place_order(self, order: OrderRequest, market_price: float | None = None) -> OrderAck:
         order_id = f"PAPER-{uuid.uuid4().hex[:12]}"
-        now = dt.datetime.now()
+        now = now_ist()
 
         if order.quantity <= 0:
             return self._record(order, order_id, "REJECTED", "Quantity must be positive")
@@ -99,7 +100,7 @@ class PaperBroker(BaseBroker):
         direction_sign = 1 if signed_field in ("LONG", "BUY") else -1
         net_pnl = direction_sign * (exit_price - pos["entry_price"]) * pos["quantity"]
         pos["status"] = "CLOSED"
-        pos["closed_at"] = dt.datetime.now()
+        pos["closed_at"] = now_ist()
         pos["exit_price"] = exit_price
         pos["net_pnl"] = net_pnl
         self.cash += net_pnl
@@ -122,7 +123,7 @@ class PaperBroker(BaseBroker):
                     Order(
                         order_id=order_id,
                         decision_id=order.decision_id,
-                        timestamp=dt.datetime.now(),
+                        timestamp=now_ist(),
                         instrument=order.instrument,
                         strategy_name=order.strategy_name,
                         direction=order.direction,
@@ -144,7 +145,7 @@ class PaperBroker(BaseBroker):
                 )
         except Exception:
             pass
-        return OrderAck(order_id=order_id, status=status, reject_reason=reject_reason, fill_price=fill_price, timestamp=dt.datetime.now())
+        return OrderAck(order_id=order_id, status=status, reject_reason=reject_reason, fill_price=fill_price, timestamp=now_ist())
 
     def _persist_fill(self, order_id, ts, price, qty, slippage) -> None:
         try:

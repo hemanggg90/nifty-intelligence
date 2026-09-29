@@ -4,6 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import datetime as dt
+from quant_intelligence.utils.timeutil import now_ist
 
 import numpy as np
 import plotly.graph_objects as go
@@ -42,7 +43,7 @@ for i, (k, v) in enumerate(default_params.items()):
 run = st.button("Run backtest", type="primary")
 
 if run:
-    end = dt.datetime.now()
+    end = now_ist()
     start = end - dt.timedelta(days=lookback_days)
     dm = DataManager()
     with st.spinner("Fetching data and computing features..."):

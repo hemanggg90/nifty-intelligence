@@ -8,6 +8,7 @@ import streamlit as st
 from quant_intelligence.config.settings import SETTINGS
 from quant_intelligence.database.db import get_session
 from quant_intelligence.database.models import RiskEvent
+from quant_intelligence.execution.engine import ENGINE
 from quant_intelligence.ui.state import get_account_state, init_session_state
 from quant_intelligence.ui.theme import apply_theme
 
@@ -39,8 +40,8 @@ st.json(
 
 st.divider()
 st.subheader("Emergency kill switch")
-kill = st.toggle("Engage kill switch (blocks ALL new trades immediately)", value=st.session_state["kill_switch_engaged"])
-st.session_state["kill_switch_engaged"] = kill
+kill = st.toggle("Engage kill switch (blocks ALL new trades immediately)", value=ENGINE.kill_switch)
+ENGINE.kill_switch = kill
 if kill:
     st.error("KILL SWITCH ENGAGED. No new trades will be approved by the risk engine.")
 

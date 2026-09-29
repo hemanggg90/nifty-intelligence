@@ -9,6 +9,7 @@ apply the returned P&L to their own session state.
 from __future__ import annotations
 
 import datetime as dt
+from quant_intelligence.utils.timeutil import now_ist
 from typing import Callable
 
 from quant_intelligence.config.settings import SETTINGS
@@ -29,7 +30,7 @@ def run_multi_instrument_cycle(
 ) -> tuple[list[dict], float]:
     """Returns (result rows, realised P&L from positions closed during the cycle)."""
     account = get_account()
-    end = dt.datetime.now()
+    end = now_ist()
     start = end - dt.timedelta(days=lookback_days)
     rows: list[dict] = []
     pnl_delta = 0.0

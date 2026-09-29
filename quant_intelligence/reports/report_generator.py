@@ -10,6 +10,7 @@ replace or fabricate figures within it.
 from __future__ import annotations
 
 import datetime as dt
+from quant_intelligence.utils.timeutil import now_ist
 
 
 def generate_report(pipeline_output) -> dict:
@@ -43,7 +44,7 @@ def generate_report(pipeline_output) -> dict:
         )
 
     content = {
-        "generated_at": str(dt.datetime.now()),
+        "generated_at": str(now_ist()),
         "instrument": o.instrument,
         "as_of_timestamp": str(o.timestamp),
         "data_quality_status": o.data_quality_status,

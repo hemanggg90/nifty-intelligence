@@ -11,6 +11,7 @@ data must lead to NO TRADE, never a silently-degraded decision.
 from __future__ import annotations
 
 import datetime as dt
+from quant_intelligence.utils.timeutil import now_ist
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -111,7 +112,7 @@ def validate_ohlcv(
         issues.append(f"{n_missing_volume} rows with missing/invalid volume")
 
     last_timestamp = ts.max()
-    now = now or dt.datetime.now()
+    now = now or now_ist()
     reference = most_recent_expected_bar_time(now)
     last_ts_py = last_timestamp.to_pydatetime()
     if last_ts_py.tzinfo is None:
