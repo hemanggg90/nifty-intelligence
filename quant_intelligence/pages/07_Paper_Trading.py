@@ -27,6 +27,7 @@ from quant_intelligence.options.option_selector import (
 from quant_intelligence.options.premium_model import PremiumSizingError, translate_setup
 from quant_intelligence.risk.risk_engine import ProposedTrade, evaluate_trade
 from quant_intelligence.strategies.registry import CHAIN_AWARE_STRATEGY_NAMES, get_strategy
+from quant_intelligence.ui.multi_instrument_panel import render_multi_instrument_panel
 from quant_intelligence.ui.state import get_account_state, init_session_state, run_pipeline_cached
 from quant_intelligence.ui.theme import apply_theme
 
@@ -34,6 +35,17 @@ apply_theme()
 init_session_state()
 st.title("Paper Trading")
 st.caption("SELECT STRATEGY -> WAIT FOR VALID SETUP -> RESOLVE OPTION CONTRACT -> RISK APPROVAL -> EXECUTE (simulated).")
+
+scope = st.radio(
+    "Scope",
+    ["Single instrument", "All instruments together (NIFTY, BANKNIFTY + all stocks)"],
+    horizontal=True,
+    help="All-instruments mode scans every index and stock in one pass and shares one paper account "
+    "and one risk engine across them.",
+)
+if scope.startswith("All"):
+    render_multi_instrument_panel()
+    st.stop()
 
 automate = st.checkbox(
     "Automate (auto-fetch chain, auto-select strategy, auto-place PAPER order on setup trigger - no manual click)",
