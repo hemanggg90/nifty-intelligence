@@ -92,3 +92,78 @@ def test_option_chain_requests_send_underlying_scrip_as_an_integer():
         client.get_option_chain("569900", "MCX_COMM", "2026-10-15")
     assert post.call_args_list[0].kwargs["json"]["UnderlyingScrip"] == 11536
     assert post.call_args_list[1].kwargs["json"]["UnderlyingScrip"] == 569900
+
+
+def _resp(status, payload):
+    from unittest.mock import MagicMock
+
+    r = MagicMock(ok=status < 400, status_code=status, text=str(payload))
+    r.json.return_value = payload
+    return r
+
+
+_RATE_LIMITED = {"data": {"805": "Too many requests."}, "status": "failed"}
+
+
+def test_option_chain_retries_after_429_then_succeeds():
+    from unittest.mock import patch
+
+    client = DhanApiClient("id", "tok")
+    with patch("quant_intelligence.brokers.dhan_api_client.requests.post",
+               side_effect=[_resp(429, _RATE_LIMITED), _resp(200, {"data": {"oc": {}}})]) as post, \
+            patch.object(client, "_throttle_option_chain"), \
+            patch("quant_intelligence.brokers.dhan_api_client.time.sleep") as sleep:
+        out = client.get_option_chain("13", "IDX_I", "2026-10-06")
+    assert out == {"data": {"oc": {}}}
+    assert post.call_count == 2 and sleep.call_count == 1
+
+
+def test_option_chain_gives_up_after_repeated_429():
+    from unittest.mock import patch
+
+    client = DhanApiClient("id", "tok")
+    with patch("quant_intelligence.brokers.dhan_api_client.requests.post",
+               return_value=_resp(429, _RATE_LIMITED)) as post, \
+            patch.object(client, "_throttle_option_chain"), \
+            patch("quant_intelligence.brokers.dhan_api_client.time.sleep"):
+        with pytest.raises(DhanApiError) as exc:
+            client.get_option_chain("13", "IDX_I", "2026-10-06")
+    assert post.call_count == 3 and exc.value.status_code == 429
+
+
+def test_other_errors_are_not_retried():
+    from unittest.mock import patch
+
+    client = DhanApiClient("id", "tok")
+    with patch("quant_intelligence.brokers.dhan_api_client.requests.post",
+               return_value=_resp(401, {"errorCode": "DH-901"})) as post, \
+            patch.object(client, "_throttle_option_chain"):
+        with pytest.raises(DhanApiError):
+            client.get_option_chain("13", "IDX_I", "2026-10-06")
+    assert post.call_count == 1
+
+
+def test_expiry_list_is_cached_so_repeat_calls_cost_no_request():
+    from unittest.mock import patch
+
+    client = DhanApiClient("id", "tok")
+    with patch("quant_intelligence.brokers.dhan_api_client.requests.post",
+               return_value=_resp(200, {"data": ["2026-10-06", "2026-10-13"]})) as post, \
+            patch.object(client, "_throttle_option_chain"):
+        first = client.get_expiry_list("13", "IDX_I")
+        second = client.get_expiry_list("13", "IDX_I")
+        client.get_expiry_list("25", "IDX_I")  # a different underlying is a separate entry
+    assert first == second == ["2026-10-06", "2026-10-13"]
+    assert post.call_count == 2
+
+
+def test_empty_expiry_list_is_not_cached():
+    from unittest.mock import patch
+
+    client = DhanApiClient("id", "tok")
+    with patch("quant_intelligence.brokers.dhan_api_client.requests.post",
+               return_value=_resp(200, {"data": []})) as post, \
+            patch.object(client, "_throttle_option_chain"):
+        client.get_expiry_list("13", "IDX_I")
+        client.get_expiry_list("13", "IDX_I")
+    assert post.call_count == 2

@@ -24,6 +24,14 @@ def _test_database():
     init_db()
 
 
+@pytest.fixture(autouse=True)
+def _fresh_expiry_cache():
+    from quant_intelligence.brokers.dhan_api_client import clear_expiry_cache
+
+    clear_expiry_cache()
+    yield
+
+
 @pytest.fixture(scope="session")
 def synthetic_ohlcv():
     adapter = SyntheticAdapter(seed=7)

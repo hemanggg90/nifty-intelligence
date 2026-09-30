@@ -20,7 +20,14 @@ import requests
 
 from quant_intelligence.config.settings import SETTINGS
 
-_OPTION_CHAIN_MIN_INTERVAL_SEC = 3.0
+_OPTION_CHAIN_MIN_INTERVAL_SEC = 3.5  # Dhan's documented limit is 1 unique request / 3 s; keep a margin
+# Dhan answers 429 (code 805, "may result in the user being blocked") when the account exceeds
+# that, including requests from any other process using the same account. Back off and retry.
+_RATE_LIMIT_MAX_ATTEMPTS = 3
+_RATE_LIMIT_BACKOFF_SEC = 6.0
+# Expiry dates change at most daily, so cache them and halve the option-chain request rate.
+_EXPIRY_CACHE_TTL_SEC = 30 * 60
+_expiry_cache: dict[tuple, tuple[float, list[str]]] = {}
 # Process-wide, not per client: the NSE and commodity runners each build their own client, and
 # Dhan's limit applies to the account, so the spacing must be shared between them.
 _option_chain_lock = threading.Lock()
@@ -28,7 +35,13 @@ _last_option_chain_call = 0.0
 
 
 class DhanApiError(RuntimeError):
-    pass
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def clear_expiry_cache() -> None:
+    _expiry_cache.clear()
 
 
 class DhanApiClient:
@@ -69,7 +82,7 @@ class DhanApiClient:
             data = {}
         if not resp.ok:
             message = data.get("remarks") or data.get("message") or resp.text or f"HTTP {resp.status_code}"
-            raise DhanApiError(f"Dhan API error ({resp.status_code}): {message}")
+            raise DhanApiError(f"Dhan API error ({resp.status_code}): {message}", status_code=resp.status_code)
         return data
 
     def _throttle_option_chain(self) -> None:
@@ -80,17 +93,34 @@ class DhanApiClient:
                 time.sleep(_OPTION_CHAIN_MIN_INTERVAL_SEC - elapsed)
             _last_option_chain_call = time.monotonic()
 
+    def _post_option_chain(self, path: str, body: dict) -> dict:
+        """POST to an option-chain endpoint: shared throttle, and back off + retry on HTTP 429."""
+        for attempt in range(1, _RATE_LIMIT_MAX_ATTEMPTS + 1):
+            self._throttle_option_chain()
+            try:
+                return self._post(path, body)
+            except DhanApiError as e:
+                if e.status_code != 429 or attempt == _RATE_LIMIT_MAX_ATTEMPTS:
+                    raise
+                time.sleep(_RATE_LIMIT_BACKOFF_SEC * attempt)
+        raise AssertionError("unreachable")
+
     def get_expiry_list(self, underlying_scrip: int, underlying_seg: str) -> list[str]:
-        self._throttle_option_chain()
+        key = (self.base_url, int(underlying_scrip), underlying_seg)
+        cached = _expiry_cache.get(key)
+        if cached and time.monotonic() - cached[0] < _EXPIRY_CACHE_TTL_SEC:
+            return list(cached[1])
         # UnderlyingScrip must be an integer: the scrip master yields string ids, which Dhan rejects (814).
-        body = self._post(
+        body = self._post_option_chain(
             "/optionchain/expirylist", {"UnderlyingScrip": int(underlying_scrip), "UnderlyingSeg": underlying_seg}
         )
-        return body.get("data", [])
+        expiries = body.get("data", [])
+        if expiries:  # never cache an empty answer (e.g. a future with no live options yet)
+            _expiry_cache[key] = (time.monotonic(), list(expiries))
+        return expiries
 
     def get_option_chain(self, underlying_scrip: int, underlying_seg: str, expiry: str) -> dict:
-        self._throttle_option_chain()
-        return self._post(
+        return self._post_option_chain(
             "/optionchain",
             {"UnderlyingScrip": int(underlying_scrip), "UnderlyingSeg": underlying_seg, "Expiry": expiry},
         )
