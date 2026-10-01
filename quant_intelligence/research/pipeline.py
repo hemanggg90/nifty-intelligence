@@ -13,17 +13,13 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from quant_intelligence.analogues.analogue_engine import (
-    COMPARISON_FEATURES,
-    conditional_metrics_from_analogues,
-    find_analogues,
-)
 from quant_intelligence.backtesting.engine import run_backtest, BacktestResult
 from quant_intelligence.data.data_manager import DataManager
 from quant_intelligence.features.feature_engine import compute_features
 from quant_intelligence.utils.market_profile import profile_for
 from quant_intelligence.market_state.market_state_engine import MarketState, build_current_state
-from quant_intelligence.ranking.ranking_engine import RankingDecision, StrategyScore, rank_and_select, score_strategy
+from quant_intelligence.ranking.ranking_engine import RankingDecision, StrategyScore, rank_and_select
+from quant_intelligence.research.ranking_core import assess_strategy
 from quant_intelligence.regimes.regime_engine import classify_regime, regime_confidence
 from quant_intelligence.strategies.registry import get_all_strategies
 from quant_intelligence.utils.logging_utils import log_event
@@ -96,28 +92,24 @@ def run_pipeline(
     strategy_intel: list[StrategyIntelligence] = []
     scores: list[StrategyScore] = []
 
+    feat_by_ts = features.set_index("timestamp")
     for strategy in strategies:
         backtest = run_backtest(strategy, ohlcv, features, instrument, split="RESEARCH", quantity=quantity)
-        observations_df = _observations_to_df(backtest, features)
-
-        analogues = find_analogues(market_state.features, observations_df, top_k=30)
-        conditional = conditional_metrics_from_analogues(analogues)
-        conditional["strategy_name"] = strategy.name
-
-        max_dd = backtest.metrics.get("max_drawdown")
-        score = score_strategy(conditional, max_dd)
+        assessment = assess_strategy(
+            strategy.name, backtest.trades, feat_by_ts, market_state.features, quantity, metrics=backtest.metrics
+        )
 
         strategy_intel.append(
             StrategyIntelligence(
                 strategy_name=strategy.name,
                 global_metrics=backtest.metrics,
-                conditional_metrics=conditional,
-                analogues=analogues,
-                score=score,
+                conditional_metrics=assessment.conditional,
+                analogues=assessment.analogues,
+                score=assessment.score,
                 backtest=backtest,
             )
         )
-        scores.append(score)
+        scores.append(assessment.score)
 
     ranking = rank_and_select(scores, data_quality_status)
 
@@ -147,21 +139,3 @@ _VOLUME_FEATURES = {"relative_volume", "volume_acceleration", "vwap", "vwap_dist
 
 def _uses_volume(strategy) -> bool:
     return bool(_VOLUME_FEATURES & set(strategy.required_features)) or "volume" in strategy.name.lower()
-
-
-def _observations_to_df(backtest: BacktestResult, features: pd.DataFrame) -> pd.DataFrame:
-    """Flatten each backtest trade's entry-time features + outcome into a flat DataFrame
-    suitable for the analogue engine (one row per historical observation)."""
-    feat_by_ts = features.set_index("timestamp")
-    rows = []
-    for t in backtest.trades:
-        if t.setup.timestamp not in feat_by_ts.index:
-            continue
-        feat_row = feat_by_ts.loc[t.setup.timestamp]
-        row = {c: feat_row.get(c) for c in COMPARISON_FEATURES}
-        row["r_multiple"] = t.r_multiple
-        row["outcome"] = t.outcome
-        row["entry_timestamp"] = t.setup.timestamp
-        row["strategy_name"] = backtest.strategy_name
-        rows.append(row)
-    return pd.DataFrame(rows)

@@ -28,9 +28,12 @@ COMPARISON_FEATURES = [
     "vwap_distance_pct",
 ]
 
-MIN_SAMPLE_FOR_MEDIUM_CONFIDENCE = 30
-MIN_SAMPLE_FOR_HIGH_CONFIDENCE = 100
 MIN_SAMPLE_FOR_ANY_CONFIDENCE = 10
+# Confidence is about how many INDEPENDENT trading days the analogues span, not how many rows:
+# the nearest analogues are mostly adjacent bars of the same session (autocorrelated), so
+# 30 rows from 2 days carry the evidence of ~2 observations, not 30.
+MIN_DAYS_FOR_MEDIUM_CONFIDENCE = 6
+MIN_DAYS_FOR_HIGH_CONFIDENCE = 15
 
 
 def find_analogues(
@@ -47,23 +50,30 @@ def find_analogues(
     if len(observations) == 0:
         return observations.assign(similarity_score=pd.Series(dtype=float))
 
-    valid_cols = [c for c in COMPARISON_FEATURES if c in observations.columns]
-    obs = observations.dropna(subset=valid_cols, how="all").copy()
-    if len(obs) == 0:
-        return obs.assign(similarity_score=[])
+    # Only compare on features that carry information on BOTH sides: a column that is all-NaN
+    # (e.g. volume features for NIFTY/BANKNIFTY), has no variance, or is unavailable right now
+    # would otherwise turn every distance into NaN and silently return the oldest rows.
+    valid_cols = []
+    for c in COMPARISON_FEATURES:
+        if c not in observations.columns:
+            continue
+        col = pd.to_numeric(observations[c], errors="coerce")
+        q = current_features.get(c)
+        if q is None or not np.isfinite(q) or col.notna().sum() < 2 or not (col.std() > 0):
+            continue
+        valid_cols.append(c)
+    if not valid_cols:
+        return observations.head(0).assign(similarity_score=pd.Series(dtype=float))
 
+    obs = observations.copy()
     for c in valid_cols:
+        obs[c] = pd.to_numeric(obs[c], errors="coerce")
         obs[c] = obs[c].fillna(obs[c].mean())
 
     means = obs[valid_cols].mean()
-    stds = obs[valid_cols].std().replace(0, 1.0)
+    stds = obs[valid_cols].std()
 
-    query_vec = np.array(
-        [
-            ((current_features.get(f) if current_features.get(f) is not None else means[f]) - means[f]) / stds[f]
-            for f in valid_cols
-        ]
-    )
+    query_vec = np.array([(current_features[f] - means[f]) / stds[f] for f in valid_cols])
 
     obs_matrix = (obs[valid_cols] - means) / stds
     distances = np.sqrt(((obs_matrix.values - query_vec) ** 2).sum(axis=1))
@@ -91,19 +101,21 @@ def conditional_metrics_from_analogues(analogues: pd.DataFrame) -> dict:
     r = analogues["r_multiple"].dropna()
     wins = r > 0
 
-    if n >= MIN_SAMPLE_FOR_HIGH_CONFIDENCE:
+    days = _trading_days(analogues.loc[r.index])
+    n_days = int(days.nunique()) if days is not None else n  # no timestamps: treat rows as independent
+    if n_days >= MIN_DAYS_FOR_HIGH_CONFIDENCE:
         confidence = "HIGH"
-    elif n >= MIN_SAMPLE_FOR_MEDIUM_CONFIDENCE:
+    elif n_days >= MIN_DAYS_FOR_MEDIUM_CONFIDENCE:
         confidence = "MEDIUM"
     else:
         confidence = "LOW"
 
-    # Standard error on expected R, to make uncertainty explicit in the UI.
-    r_std = r.std(ddof=1) if len(r) > 1 else np.nan
-    se = r_std / np.sqrt(len(r)) if len(r) > 1 else np.nan
+    # Standard error of the mean, robust to same-day clustering of the analogues.
+    se = _cluster_robust_stderr(r.to_numpy(), days.to_numpy() if days is not None else None)
 
     return {
         "sample_size": n,
+        "n_days": n_days,
         "confidence_label": confidence,
         "expected_r": float(r.mean()),
         "expected_r_stderr": float(se) if not np.isnan(se) else None,
@@ -111,3 +123,25 @@ def conditional_metrics_from_analogues(analogues: pd.DataFrame) -> dict:
         "win_rate": float(wins.mean()),
         "median_r": float(r.median()),
     }
+
+
+def _trading_days(analogues: pd.DataFrame):
+    if "entry_timestamp" not in analogues.columns:
+        return None
+    return pd.to_datetime(analogues["entry_timestamp"]).dt.date
+
+
+def _cluster_robust_stderr(values: np.ndarray, days) -> float:
+    """SE of the mean with observations clustered by trading day (each day's residuals may move
+    together). With no cluster info, or one row per day, this is the ordinary SE."""
+    n = len(values)
+    if n < 2:
+        return np.nan
+    resid = values - values.mean()
+    if days is None:
+        return float(values.std(ddof=1) / np.sqrt(n))
+    sums = pd.Series(resid).groupby(np.asarray(days)).sum().to_numpy()
+    g = len(sums)
+    if g < 2:
+        return np.nan  # a single day tells us nothing about day-to-day variability
+    return float(np.sqrt(g / (g - 1) * np.sum(sums**2)) / n)

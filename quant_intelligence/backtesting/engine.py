@@ -50,6 +50,22 @@ def _apply_costs(trade: TradeResult, entry_price: float, quantity: int) -> tuple
     return commissions, fees, slippage_amount, net_pnl
 
 
+def net_r_multiple(trade: TradeResult, quantity: int) -> float:
+    """Net-of-cost R: (gross P&L - brokerage - fees - slippage) / amount risked. This, not the
+    gross `TradeResult.r_multiple`, is what a strategy actually earns and what ranking must use."""
+    net_pnl = _apply_costs(trade, trade.setup.entry_price, quantity)[3]
+    risk = abs(trade.setup.entry_price - trade.setup.stop_price) * quantity
+    return net_pnl / risk if risk > 0 else 0.0
+
+
+def max_drawdown_in_r(net_r: np.ndarray) -> float | None:
+    """Worst peak-to-trough fall of cumulative net R (negative number; None with no trades)."""
+    if len(net_r) == 0:
+        return None
+    equity = np.cumsum(net_r)
+    return float((equity - np.maximum.accumulate(equity)).min())
+
+
 def run_backtest(
     strategy: BaseStrategy,
     ohlcv: pd.DataFrame,
@@ -58,6 +74,7 @@ def run_backtest(
     split: str = "IN_SAMPLE",
     quantity: int = 50,
     max_holding_bars: int = 75,
+    persist: bool = True,
 ) -> BacktestResult:
     run_id = f"BT-{uuid.uuid4().hex[:12]}"
 
@@ -82,7 +99,8 @@ def run_backtest(
     run = BacktestResult(run_id=run_id, strategy_name=strategy.name, instrument=instrument, split=split, trades=trades)
     run.metrics = _compute_run_metrics(trades, quantity)
 
-    _persist_backtest(run, strategy, ohlcv, features, feat_by_ts, quantity)
+    if persist:
+        _persist_backtest(run, strategy, ohlcv, features, feat_by_ts, quantity)
     return run
 
 
@@ -103,6 +121,7 @@ def _compute_run_metrics(trades: list[TradeResult], quantity: int) -> dict:
     avg_loss = r_multiples[~wins].mean() if (~wins).any() else 0.0
     payoff_ratio = float(abs(avg_win / avg_loss)) if avg_loss != 0 else float("nan")
 
+    net_rs = np.array([net_r_multiple(t, quantity) for t in trades])
     equity_curve = np.cumsum(net_pnls)
     running_max = np.maximum.accumulate(equity_curve) if len(equity_curve) else np.array([0])
     drawdown = equity_curve - running_max
@@ -125,7 +144,9 @@ def _compute_run_metrics(trades: list[TradeResult], quantity: int) -> dict:
         "payoff_ratio": payoff_ratio,
         "sharpe": sharpe,
         "sortino": sortino,
-        "max_drawdown": max_drawdown,
+        "max_drawdown": max_drawdown,  # rupees (display)
+        "max_drawdown_r": max_drawdown_in_r(net_rs),  # R units (used by the ranker)
+        "net_expected_r": float(net_rs.mean()),
         "avg_mfe": float(np.mean([t.mfe for t in trades])),
         "avg_mae": float(np.mean([t.mae for t in trades])),
         "avg_holding_bars": float(np.mean([t.holding_period_bars for t in trades])),
