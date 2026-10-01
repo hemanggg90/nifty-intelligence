@@ -25,11 +25,18 @@ def _test_database():
 
 
 @pytest.fixture(autouse=True)
-def _fresh_expiry_cache():
+def _fresh_dhan_state():
+    """Process-wide Dhan state (rate limiter, breaker, caches) must not leak between tests."""
     from quant_intelligence.brokers.dhan_api_client import clear_expiry_cache
+    from quant_intelligence.brokers.dhan_cache import clear_dhan_caches
+    from quant_intelligence.brokers.dhan_rate_limit import LIMITER
 
     clear_expiry_cache()
+    clear_dhan_caches()
+    LIMITER.reset()
     yield
+    LIMITER.reset()
+    clear_dhan_caches()
 
 
 @pytest.fixture(scope="session")

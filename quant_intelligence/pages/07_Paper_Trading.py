@@ -34,6 +34,9 @@ from quant_intelligence.execution.engine import ENGINE
 from quant_intelligence.ui.state import get_account_state, init_session_state, run_pipeline_cached
 from quant_intelligence.ui.theme import apply_theme
 
+# The option chain is cached for SETTINGS.dhan.chain_cache_ttl_sec; polling faster only re-reads the cache.
+_CHAIN_POLL_SEC = max(int(SETTINGS.ltp_refresh_seconds), int(SETTINGS.dhan.chain_cache_ttl_sec))
+
 apply_theme()
 init_session_state()
 st.title("Paper Trading")
@@ -71,7 +74,8 @@ underlying_choices = list(SETTINGS.option_underlyings) + list_fno_stock_symbols(
 underlying = c1.selectbox("Underlying", underlying_choices, key="option_underlying")
 if c2.button("Fetch live option chain", disabled=not client.is_configured()):
     try:
-        st.session_state["option_chain"] = fetch_chain(client, underlying, SETTINGS.option_expiry_preference)
+        # Explicit click: force a fresh chain (the limiter still spaces it under Dhan's limit).
+        st.session_state["option_chain"] = fetch_chain(client, underlying, SETTINGS.option_expiry_preference, max_age=0)
     except Exception as e:
         st.session_state["option_chain"] = None
         st.error(f"Could not fetch option chain: {e}")
@@ -79,7 +83,9 @@ live_ltp = c3.checkbox(
     "Live refresh",
     value=True,
     disabled=not client.is_configured(),
-    help=f"Re-fetch spot/chain and open positions' premium every {SETTINGS.ltp_refresh_seconds}s (read-only, no auto-trading).",
+    help=f"Refresh spot/chain every {_CHAIN_POLL_SEC}s and open positions' premium every {SETTINGS.ltp_refresh_seconds}s "
+    "(read-only, no auto-trading). Responses are shared with every other tab and the auto-trader, so this adds no "
+    "extra Dhan requests inside the cache window.",
 )
 
 if not client.is_configured():
@@ -117,7 +123,7 @@ if automate:
 
 if client.is_configured() and live_ltp and not automate:
 
-    @st.fragment(run_every=f"{SETTINGS.ltp_refresh_seconds}s")
+    @st.fragment(run_every=f"{_CHAIN_POLL_SEC}s")
     def _live_chain_fragment():
         try:
             st.session_state["option_chain"] = fetch_chain(client, underlying, SETTINGS.option_expiry_preference)
@@ -130,7 +136,7 @@ if client.is_configured() and live_ltp and not automate:
             cc2.metric("ATM strike", chain_now.atm_strike)
             cc3.metric("Total PCR", round(chain_now.total_pcr, 2) if chain_now.total_pcr else "-")
             cc4.metric("ATM IV", round(chain_now.atm_iv, 2) if chain_now.atm_iv else "-")
-        st.caption(f"Live prices updated {now_ist():%H:%M:%S} (every {SETTINGS.ltp_refresh_seconds}s)")
+        st.caption(f"Live prices updated {now_ist():%H:%M:%S} (every {_CHAIN_POLL_SEC}s)")
 
     _live_chain_fragment()
 else:

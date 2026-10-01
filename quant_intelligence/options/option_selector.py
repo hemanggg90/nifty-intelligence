@@ -97,10 +97,24 @@ def resolve_expiry(available_expiries: list[str], preference: str = "NEAREST") -
     return ordered[0]
 
 
-def fetch_chain(client, underlying: str, expiry_preference: str = "NEAREST") -> ChainSnapshot:
+def fetch_chain(
+    client, underlying: str, expiry_preference: str = "NEAREST", max_age: float | None = None
+) -> ChainSnapshot:
     """Fetch and resolve the current live option chain for `underlying` - a registered
     index or any NSE F&O stock (see get_underlying_info). Makes real network calls via
-    `client` (a DhanApiClient)."""
+    `client` (a DhanApiClient), but at most one per `max_age` seconds per underlying: the result is
+    shared by every caller (background runners and every browser tab) through a single-flight cache,
+    which is what keeps the account under Dhan's option-chain limit. `max_age` defaults to
+    SETTINGS.dhan.chain_cache_ttl_sec; pass 0 to force a fresh fetch (e.g. before a live order)."""
+    from quant_intelligence.brokers.dhan_cache import CHAIN_CACHE
+    from quant_intelligence.config.settings import SETTINGS
+
+    ttl = SETTINGS.dhan.chain_cache_ttl_sec if max_age is None else max_age
+    key = (getattr(client, "base_url", ""), underlying.strip().upper(), expiry_preference)
+    return CHAIN_CACHE.get(key, lambda: _fetch_chain_uncached(client, underlying, expiry_preference), ttl)
+
+
+def _fetch_chain_uncached(client, underlying: str, expiry_preference: str) -> ChainSnapshot:
     info = get_underlying_info(underlying)
     # MCX options sit on a futures contract; once the front-month future has no live option
     # expiry left, the next month's future carries the chain.

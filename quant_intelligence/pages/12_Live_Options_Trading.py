@@ -64,7 +64,7 @@ underlying_choices = list(SETTINGS.option_underlyings) + list_fno_stock_symbols(
 underlying = c1.selectbox("Underlying", underlying_choices, key="option_underlying")
 if c2.button("Fetch live option chain"):
     try:
-        st.session_state["option_chain"] = fetch_chain(client, underlying, SETTINGS.option_expiry_preference)
+        st.session_state["option_chain"] = fetch_chain(client, underlying, SETTINGS.option_expiry_preference, max_age=0)
     except Exception as e:
         st.session_state["option_chain"] = None
         st.error(f"Could not fetch option chain: {e}")

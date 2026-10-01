@@ -245,10 +245,10 @@ def test_kill_switch_is_shared_and_gate_uses_each_runners_own_session(monkeypatc
 
 def test_option_chain_throttle_is_shared_across_clients(monkeypatch):
     from quant_intelligence.brokers import dhan_api_client as client_module
+    from quant_intelligence.brokers.dhan_rate_limit import LIMITER
 
     sleeps = []
-    monkeypatch.setattr(client_module.time, "sleep", lambda s: sleeps.append(s))
-    monkeypatch.setattr(client_module, "_last_option_chain_call", 0.0)
+    monkeypatch.setattr(LIMITER, "sleep", lambda s: sleeps.append(s))
     a, b = client_module.DhanApiClient("id", "tok"), client_module.DhanApiClient("id", "tok")
     a._throttle_option_chain()
     b._throttle_option_chain()  # a different client, immediately after

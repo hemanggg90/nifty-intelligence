@@ -175,7 +175,7 @@ historical chain data), so they can fire live but are never selected by the rank
 ## Market data
 
 Preference order, per instrument: **CSV files you provide** (`data_cache/csv/<SYMBOL>_<TIMEFRAME>.csv`
-with `timestamp,open,high,low,close,volume`) -> **Dhan** -> error. Results are cached as Parquet in
+with `timestamp,open,high,low,close,volume`) -> **Dhan** -> error. Results are cached as Parquet (and refreshed only when a new bar closes - see *Staying under Dhan's rate limits*) in
 `data_cache/parquet_cache/`.
 
 - **Instruments:** NSE equities, NIFTY, BANKNIFTY (Dhan `INDEX` candles) and MCX futures underlyings.
@@ -241,9 +241,29 @@ with `timestamp,open,high,low,close,volume`) -> **Dhan** -> error. Results are c
 - **Premium model** (`options/premium_model.py`): scales underlying stop/target by live |delta|
   (0.5 if unknown) - a first-order approximation that ignores gamma/theta, so it is an estimate to be
   monitored against live premium, not a guarantee.
-- **Rate limits.** Dhan allows ~1 option-chain request per 3 s per *account*. The client spaces calls
-  3.5 s apart process-wide, caches expiry lists for 30 minutes, and retries up to 3 times with backoff
-  on HTTP 429. Do not run two copies of the app on one Dhan account simultaneously.
+- **Staying under Dhan's rate limits.** Dhan's limits apply to the whole *account*, and exceeding them
+  (HTTP 429, code 805) risks the account being blocked. Published limits: orders 10/s, data (candles) 5/s,
+  quote (live prices) **1/s**, non-trading (funds, positions) 20/s, option chain 1 per 3 s. The app is built
+  to stay inside them rather than recover after hitting them:
+  - **One limiter for everything** (`brokers/dhan_rate_limit.py`): every Dhan call is classed into one of
+    those categories and spaced ~30% under the limit, shared by both background runners and every browser tab.
+  - **Chains only when needed:** the option chain is fetched only for an instrument whose strategy has a
+    *triggered setup* (or a chain-aware strategy), not for all ~25 instruments every cycle.
+  - **Shared single-flight caches** (`brokers/dhan_cache.py`): live prices (2 s) and option chains (15 s) are
+    fetched once and shared, so ten open tabs cost the same as one. Expiry lists are cached for 30 minutes.
+  - **Candles refresh on bar close:** an instrument is re-requested only when a new bar has closed (about one
+    small tail request per instrument per bar), then merged into the cache.
+  - **429 handling:** read calls honour `Retry-After` or back off (6/12 s) and retry up to 3 times. After
+    repeated 429s a short circuit breaker (30 s, doubling to 2 min) fast-fails reads without touching the
+    network and then resumes by itself. **Orders are throttled but never auto-retried** (a retry could
+    duplicate an order) and are never blocked by the breaker, so exits can always go out.
+  - **Rejected token (401):** nothing more is sent with that token for 5 minutes or until you paste a new
+    one; hammering Dhan with a dead token on every cycle would itself risk a block.
+  - **Visibility:** *System Logs & Health* shows calls per category over the last minute, 429 counts and any
+    pause; a sidebar banner appears on every page while requests are paused.
+
+  The app cannot see requests made by *other* processes on the same account (a second copy of the app, a
+  local run plus a cloud deployment, scripts). **Run one instance at a time.**
 
 ## Risk engine and position sizing
 
@@ -367,6 +387,11 @@ SQLite even with no `.env`.
 | `OPT_STT_SELL_RATE_NSE`, `OPT_STT_SELL_RATE_MCX` | `0.0015`, `0.0005` | STT on sell-side option premium. |
 | `OPT_TXN_RATE_NSE`, `OPT_TXN_RATE_MCX` | `0.0003553`, `0.000418` | Exchange charge on premium turnover. |
 | `SEBI_RATE`, `STAMP_BUY_RATE`, `GST_RATE` | `0.000001`, `0.00003`, `0.18` | SEBI fee, buy-side stamp duty, GST on brokerage + exchange + SEBI. |
+| `DHAN_MIN_INTERVAL_QUOTE_SEC`, `DHAN_MIN_INTERVAL_DATA_SEC`, `DHAN_MIN_INTERVAL_NONTRADING_SEC`, `DHAN_MIN_INTERVAL_ORDERS_SEC`, `DHAN_MIN_INTERVAL_CHAIN_SEC` | `1.25`, `0.35`, `0.1`, `0.17`, `3.5` | Minimum seconds between Dhan calls per category (set under Dhan's limits of 1/s, 5/s, 20/s, 10/s, 1 per 3 s). Lower them only if you are sure of your account's limits. |
+| `DHAN_429_MAX_ATTEMPTS`, `DHAN_429_BACKOFF_SEC` | `3`, `6` | Tries and base backoff for reads that get HTTP 429. |
+| `DHAN_BREAKER_THRESHOLD`, `DHAN_BREAKER_COOLDOWN_SEC`, `DHAN_BREAKER_MAX_COOLDOWN_SEC` | `3`, `30`, `120` | Consecutive 429s that pause reads, and the pause length (doubles up to the max). |
+| `DHAN_AUTH_FAILURE_COOLDOWN_SEC` | `300` | How long to stop sending requests with a token Dhan rejected (401). |
+| `DHAN_QUOTE_CACHE_TTL_SEC`, `DHAN_CHAIN_CACHE_TTL_SEC` | `2`, `15` | How long a live-price / option-chain response is shared between tabs and the auto-traders. |
 | `OPTION_PREMIUM_PCT`, `OPTION_DELTA` | `1.5`, `0.5` | Assumed option premium (% of the underlying's price) and delta used to convert the underlying backtest into option P&L and costs. |
 
 > The statutory rates are the published exchange/government charges (taken from Zerodha's public charges
@@ -421,6 +446,7 @@ quant_intelligence/
                  position_monitor | square_off | capital
   risk/          risk_engine.py
   brokers/       base_broker | paper_broker | dhan_broker (live) | dhan_api_client (REST)
+                 dhan_rate_limit (account-wide limiter, 429 breaker) | dhan_cache (shared price/chain caches)
   database/      db.py | models.py
   reports/       report_generator.py
   ui/            state | theme | credentials_panel | multi_instrument_panel | live_positions
@@ -458,7 +484,8 @@ temporary database and never write to your real one.
 | Symptom | Cause / fix |
 |---|---|
 | `Dhan API error (401) ... DH-901 Invalid_Authentication` | Access token expired (about 24 h) or wrong. Generate a new one and update the sidebar / Secrets. |
-| `Dhan API error (429) ... 805 Too many requests` | Dhan's per-account rate limit. The client already retries; make sure only one app instance uses the account. |
+| `Dhan API error (429) ... 805 Too many requests` | Dhan's per-account rate limit. The app spaces, caches and retries calls and pauses briefly if it persists (see *Health* page / sidebar banner). Usually another app copy, tab or script is using the same account - run **one** instance. |
+| "Dhan rejected your credentials (401)" / "Authentication Failed" | The access token expired or is wrong. Requests are paused for 5 min or until you enter a new token under **API Keys**. |
 | `DataUnavailableError: No real market data ...` | No CSV and Dhan failed or isn't configured; the message lists the reason. |
 | Data quality `FAIL` / `DEGRADED` | Read the issues in the log: stale data (market closed), gaps, bad bars, or misaligned timezone. The system stays in NO TRADE. |
 | Everything is `NO TRADE` | Often correct: no strategy clears the edge/confidence bar, or data isn't `OK`. See Known limitations. |

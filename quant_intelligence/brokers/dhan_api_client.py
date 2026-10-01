@@ -1,11 +1,13 @@
 """
 Thin REST client for the Dhan v2 API.
 
-Centralizes auth headers, base URL, and error handling for every Dhan
-endpoint the system uses. Deliberately dumb: no retries, no caching beyond a
-simple in-process throttle for the option-chain endpoint (documented by Dhan
-as one unique request per 3 seconds). Every method raises `DhanApiError` on
-a non-2xx response or malformed body - callers decide how to degrade.
+Centralizes auth headers, base URL, rate limiting and error handling for every Dhan endpoint the
+system uses. Every request is assigned a Dhan API category (quote / data / non_trading / orders /
+option_chain) and goes through the process-wide limiter in `dhan_rate_limit.LIMITER`, which spaces
+calls below Dhan's account-wide limits. Read calls that get HTTP 429 back off and retry; after
+repeated 429s a short circuit breaker fast-fails reads (never orders). Order placement is throttled
+but NEVER auto-retried (a retry could duplicate an order). Every method raises `DhanApiError` on a
+non-2xx response or malformed body - callers decide how to degrade.
 
 This client makes real network calls. It is never imported by anything in
 `quant_intelligence/tests/` in a way that hits the network - tests mock
@@ -13,31 +15,38 @@ This client makes real network calls. It is never imported by anything in
 """
 from __future__ import annotations
 
-import threading
 import time
 
 import requests
 
+from quant_intelligence.brokers.dhan_rate_limit import LIMITER
 from quant_intelligence.config.settings import SETTINGS
 
-_OPTION_CHAIN_MIN_INTERVAL_SEC = 3.5  # Dhan's documented limit is 1 unique request / 3 s; keep a margin
-# Dhan answers 429 (code 805, "may result in the user being blocked") when the account exceeds
-# that, including requests from any other process using the same account. Back off and retry.
-_RATE_LIMIT_MAX_ATTEMPTS = 3
-_RATE_LIMIT_BACKOFF_SEC = 6.0
 # Expiry dates change at most daily, so cache them and halve the option-chain request rate.
 _EXPIRY_CACHE_TTL_SEC = 30 * 60
 _expiry_cache: dict[tuple, tuple[float, list[str]]] = {}
-# Process-wide, not per client: the NSE and commodity runners each build their own client, and
-# Dhan's limit applies to the account, so the spacing must be shared between them.
-_option_chain_lock = threading.Lock()
-_last_option_chain_call = 0.0
 
 
 class DhanApiError(RuntimeError):
     def __init__(self, message: str, status_code: int | None = None):
         super().__init__(message)
         self.status_code = status_code
+
+
+class DhanRateLimited(DhanApiError):
+    """Dhan said 429 repeatedly; reads are paused briefly (no request was sent, or the last one
+    pushed the circuit breaker open). `retry_in` is the seconds until requests resume."""
+
+    def __init__(self, message: str, retry_in: float = 0.0):
+        super().__init__(message, status_code=429)
+        self.retry_in = retry_in
+
+
+def _retry_after_seconds(resp) -> float | None:
+    try:
+        return float(resp.headers.get("Retry-After"))
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
 def clear_expiry_cache() -> None:
@@ -65,15 +74,62 @@ class DhanApiClient:
         if not self.is_configured():
             raise DhanApiError("DhanApiClient is not configured: set DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN in .env")
 
-    def _get(self, path: str) -> dict:
-        self._require_configured()
-        resp = requests.get(f"{self.base_url}{path}", headers=self._headers(), timeout=15)
-        return self._handle(resp)
+    def _throttle(self, category: str) -> None:
+        if category == "option_chain":
+            self._throttle_option_chain()
+        else:
+            LIMITER.acquire(category)
 
-    def _post(self, path: str, body: dict) -> dict:
+    def _request(self, method: str, path: str, body: dict | None = None, *, category: str, retry: bool = True) -> dict:
+        """One Dhan call: breaker check -> spacing -> request -> 429 backoff/retry (reads only)."""
         self._require_configured()
-        resp = requests.post(f"{self.base_url}{path}", headers=self._headers(), json=body, timeout=15)
-        return self._handle(resp)
+        limits = SETTINGS.dhan
+        attempts = limits.max_attempts if retry else 1
+        for attempt in range(1, attempts + 1):
+            blocked = LIMITER.auth_block_remaining(self.access_token)
+            if blocked > 0:
+                raise DhanApiError(
+                    f"Dhan rejected your credentials (401); not sending requests for another {blocked:.0f}s. "
+                    "Update the access token (tokens expire about every 24 hours).",
+                    status_code=401,
+                )
+            remaining = LIMITER.cooldown_remaining(category)
+            if remaining > 0:
+                raise DhanRateLimited(
+                    f"Dhan rate limit: {category} requests paused for another {remaining:.0f}s", retry_in=remaining
+                )
+            self._throttle(category)
+            url = f"{self.base_url}{path}"
+            if method == "GET":
+                resp = requests.get(url, headers=self._headers(), timeout=15)
+            else:
+                resp = requests.post(url, headers=self._headers(), json=body, timeout=15)
+            try:
+                data = self._handle(resp)
+            except DhanApiError as e:
+                if e.status_code == 401:
+                    LIMITER.record_auth_failure(self.access_token)
+                if e.status_code == 429:
+                    retry_after = _retry_after_seconds(resp)
+                    opened = LIMITER.record_429(category, retry_after)
+                    if opened:
+                        raise DhanRateLimited(
+                            f"Dhan rate limit hit on {category} calls; paused for {LIMITER.cooldown_remaining(category):.0f}s",
+                            retry_in=LIMITER.cooldown_remaining(category),
+                        ) from e
+                    if retry and attempt < attempts:
+                        time.sleep(max(retry_after or 0.0, limits.backoff_sec * attempt))
+                        continue
+                raise
+            LIMITER.record_success(category)
+            return data
+        raise AssertionError("unreachable")
+
+    def _get(self, path: str, category: str = "non_trading", retry: bool = True) -> dict:
+        return self._request("GET", path, category=category, retry=retry)
+
+    def _post(self, path: str, body: dict, category: str = "non_trading", retry: bool = True) -> dict:
+        return self._request("POST", path, body, category=category, retry=retry)
 
     def _handle(self, resp: "requests.Response") -> dict:
         try:
@@ -86,24 +142,11 @@ class DhanApiClient:
         return data
 
     def _throttle_option_chain(self) -> None:
-        global _last_option_chain_call
-        with _option_chain_lock:  # concurrent callers queue up, each spaced 3 s from the last
-            elapsed = time.monotonic() - _last_option_chain_call
-            if elapsed < _OPTION_CHAIN_MIN_INTERVAL_SEC:
-                time.sleep(_OPTION_CHAIN_MIN_INTERVAL_SEC - elapsed)
-            _last_option_chain_call = time.monotonic()
+        LIMITER.acquire("option_chain")
 
     def _post_option_chain(self, path: str, body: dict) -> dict:
-        """POST to an option-chain endpoint: shared throttle, and back off + retry on HTTP 429."""
-        for attempt in range(1, _RATE_LIMIT_MAX_ATTEMPTS + 1):
-            self._throttle_option_chain()
-            try:
-                return self._post(path, body)
-            except DhanApiError as e:
-                if e.status_code != 429 or attempt == _RATE_LIMIT_MAX_ATTEMPTS:
-                    raise
-                time.sleep(_RATE_LIMIT_BACKOFF_SEC * attempt)
-        raise AssertionError("unreachable")
+        """POST to an option-chain endpoint (shared spacing; 429 backoff and retry)."""
+        return self._post(path, body, category="option_chain")
 
     def get_expiry_list(self, underlying_scrip: int, underlying_seg: str) -> list[str]:
         key = (self.base_url, int(underlying_scrip), underlying_seg)
@@ -126,17 +169,18 @@ class DhanApiClient:
         )
 
     def get_ltp(self, segment_map: dict[str, list[int]]) -> dict:
-        return self._post("/marketfeed/ltp", segment_map)
+        return self._post("/marketfeed/ltp", segment_map, category="quote")
 
     def get_fund_limit(self) -> dict:
-        return self._get("/fundlimit")
+        return self._get("/fundlimit", category="non_trading")
 
     def get_positions(self) -> list[dict]:
-        data = self._get("/positions")
+        data = self._get("/positions", category="non_trading")
         return data if isinstance(data, list) else data.get("data", [])
 
     def place_order(self, payload: dict) -> dict:
-        return self._post("/orders", payload)
+        # Throttled but never auto-retried: a retried order could be placed twice.
+        return self._post("/orders", payload, category="orders", retry=False)
 
     def get_historical_daily(
         self, security_id: str, exchange_segment: str, instrument: str, from_date: str, to_date: str
@@ -153,6 +197,7 @@ class DhanApiClient:
                 "fromDate": from_date,
                 "toDate": to_date,
             },
+            category="data",
         )
 
     def get_intraday_minute(
@@ -177,4 +222,5 @@ class DhanApiClient:
                 "fromDate": from_date,
                 "toDate": to_date,
             },
+            category="data",
         )

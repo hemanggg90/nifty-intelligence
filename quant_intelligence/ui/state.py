@@ -12,6 +12,7 @@ from quant_intelligence.utils.timeutil import now_ist
 import streamlit as st
 
 from quant_intelligence.brokers.dhan_api_client import DhanApiClient
+from quant_intelligence.brokers.dhan_rate_limit import LIMITER
 from quant_intelligence.config.settings import SETTINGS
 from quant_intelligence.execution.engine import COMMODITY_RUNNER, ENGINE
 from quant_intelligence.risk.risk_engine import AccountState
@@ -44,6 +45,18 @@ def init_session_state() -> None:
 def render_engine_sidebar() -> None:
     """Visible on every page: shows the background auto-trader and lets you stop it."""
     with st.sidebar:
+        snap = LIMITER.snapshot()
+        if snap["auth_block_remaining"] > 0:
+            st.error(
+                "Dhan rejected your access token (it expires about every 24 hours). Requests are paused so the "
+                "account is not hammered - enter a fresh token under 'API Keys' and they resume immediately."
+            )
+        paused = snap["cooldown_remaining"]
+        if paused > 0:
+            st.warning(
+                f"Dhan rate limit reached - data requests are paused for {paused:.0f}s to protect your account "
+                "and resume automatically. Make sure only one copy of the app uses this Dhan account."
+            )
         for runner, label in ((ENGINE, "NSE"), (COMMODITY_RUNNER, "Commodities")):
             status = runner.status()
             if not status["running"]:

@@ -85,6 +85,35 @@ class CostAssumptions:
 
 
 @dataclass(frozen=True)
+class DhanLimits:
+    """Client-side budget for Dhan API calls. Dhan's published limits apply to the whole ACCOUNT:
+    orders 10/s, data (candles) 5/s, quote (LTP) 1/s, non-trading 20/s, option chain 1 per 3 s
+    (https://dhanhq.co/docs/v2/). Minimum spacings below keep ~30% headroom under each."""
+
+    min_interval_quote: float = _float_env("DHAN_MIN_INTERVAL_QUOTE_SEC", 1.25)  # limit 1/s
+    min_interval_data: float = _float_env("DHAN_MIN_INTERVAL_DATA_SEC", 0.35)  # limit 5/s
+    min_interval_non_trading: float = _float_env("DHAN_MIN_INTERVAL_NONTRADING_SEC", 0.1)  # limit 20/s
+    min_interval_orders: float = _float_env("DHAN_MIN_INTERVAL_ORDERS_SEC", 0.17)  # limit 10/s
+    min_interval_option_chain: float = _float_env("DHAN_MIN_INTERVAL_CHAIN_SEC", 3.5)  # limit 1 per 3 s
+
+    # HTTP 429 handling for read calls: retry with backoff; after `breaker_threshold` consecutive 429s
+    # stop sending reads for a short cooldown (doubling up to the max) so the account is not blocked.
+    max_attempts: int = _int_env("DHAN_429_MAX_ATTEMPTS", 3)
+    backoff_sec: float = _float_env("DHAN_429_BACKOFF_SEC", 6.0)
+    breaker_threshold: int = _int_env("DHAN_BREAKER_THRESHOLD", 3)
+    breaker_cooldown_sec: float = _float_env("DHAN_BREAKER_COOLDOWN_SEC", 30.0)
+    breaker_max_cooldown_sec: float = _float_env("DHAN_BREAKER_MAX_COOLDOWN_SEC", 120.0)
+    # After Dhan rejects the credentials (HTTP 401), send NOTHING with that same token for this long.
+    # Retrying a rejected token on every cycle for every instrument is itself abusive; a new token
+    # (changed in the sidebar/secrets) is picked up immediately.
+    auth_failure_cooldown_sec: float = _float_env("DHAN_AUTH_FAILURE_COOLDOWN_SEC", 300.0)
+
+    # Shared caches: every tab and both background runners reuse one response within the TTL.
+    quote_cache_ttl_sec: float = _float_env("DHAN_QUOTE_CACHE_TTL_SEC", 2.0)
+    chain_cache_ttl_sec: float = _float_env("DHAN_CHAIN_CACHE_TTL_SEC", 15.0)
+
+
+@dataclass(frozen=True)
 class Settings:
     trading_mode: str = os.getenv("TRADING_MODE", "PAPER").strip().upper()
     trading_live_confirm: str = os.getenv("TRADING_LIVE_CONFIRM", "").strip()
@@ -124,6 +153,7 @@ class Settings:
 
     risk: RiskLimits = field(default_factory=RiskLimits)
     costs: CostAssumptions = field(default_factory=CostAssumptions)
+    dhan: DhanLimits = field(default_factory=DhanLimits)
 
     @property
     def is_live_mode(self) -> bool:

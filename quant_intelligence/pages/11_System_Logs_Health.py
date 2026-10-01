@@ -5,6 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import streamlit as st
 
+from quant_intelligence.brokers.dhan_rate_limit import LIMITER
 from quant_intelligence.config.settings import SETTINGS
 from quant_intelligence.data_adapters.dhan_adapter import DhanAdapter
 from quant_intelligence.database.db import get_engine, get_session
@@ -38,6 +39,34 @@ if SETTINGS.is_live_mode and not SETTINGS.live_mode_fully_authorized:
         "TRADING_MODE=LIVE is set but TRADING_LIVE_CONFIRM is missing/incorrect. "
         "LIVE order placement remains blocked by design."
     )
+
+st.divider()
+st.subheader("Dhan API usage")
+snap = LIMITER.snapshot()
+if snap["auth_block_remaining"] > 0:
+    st.error("Dhan rejected the access token (401): requests are paused until you enter a new one.")
+elif snap["cooldown_remaining"] > 0:
+    st.warning(f"Rate limit reached: data requests paused for another {snap['cooldown_remaining']:.0f}s (auto-resumes).")
+else:
+    st.success("Within Dhan's limits - no pause active.")
+st.caption(
+    f"Calls in the last {snap['window_sec']:.0f}s by Dhan API category, against the minimum spacing this app enforces "
+    "(set below Dhan's published account-wide limits). The limit applies to your whole Dhan account - another app "
+    "copy, browser tab or script using it counts too."
+)
+st.dataframe(
+    [
+        {
+            "Category": name,
+            "Calls (last 60 s)": c["calls_last_window"],
+            "Min spacing (s)": c["min_interval_sec"],
+            "HTTP 429 since start": c["total_429"],
+        }
+        for name, c in snap["categories"].items()
+    ],
+    width="stretch",
+    hide_index=True,
+)
 
 st.divider()
 st.subheader("Latest data fetches")

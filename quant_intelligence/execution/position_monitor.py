@@ -17,14 +17,17 @@ from quant_intelligence.utils.timeutil import now_ist
 import pandas as pd
 
 from quant_intelligence.brokers.paper_broker import PaperBroker
+from quant_intelligence.config.settings import SETTINGS
 from quant_intelligence.regimes.regime_engine import classify_regime
 from quant_intelligence.utils.logging_utils import log_event
 from quant_intelligence.utils.market_profile import profile_for
 
 
-def _fetch_quotes(api_client, positions: list[dict]) -> dict:
+def _fetch_quotes(api_client, positions: list[dict], max_age: float = 1.0, stale_ok_for: float = 0.0) -> dict:
     """Live quotes for option positions keyed by security_id (as str). One LTP call covering
-    every exchange segment involved, so NSE and MCX positions are both priced."""
+    every exchange segment involved, so NSE and MCX positions are both priced. Goes through the
+    shared quote cache, so tabs and background runners asking within `max_age` seconds share a single
+    Dhan request (Dhan allows only 1 quote request per second for the whole account)."""
     by_segment: dict[str, list[int]] = {}
     for p in positions:
         if not p.get("security_id"):
@@ -33,7 +36,12 @@ def _fetch_quotes(api_client, positions: list[dict]) -> dict:
         by_segment.setdefault(segment, []).append(int(p["security_id"]))
     if not by_segment:
         return {}
-    data = api_client.get_ltp({seg: sorted(set(ids)) for seg, ids in by_segment.items()}).get("data") or {}
+    from quant_intelligence.brokers.dhan_cache import QUOTE_CACHE
+
+    data = QUOTE_CACHE.get_quotes(
+        api_client, {seg: sorted(set(ids)) for seg, ids in by_segment.items()},
+        max_age=max_age, stale_ok_for=stale_ok_for,
+    )
     quotes: dict = {}
     for seg_quotes in data.values():
         quotes.update({str(k): v for k, v in (seg_quotes or {}).items()})
@@ -80,7 +88,7 @@ def monitor_option_positions(broker: PaperBroker, api_client) -> list[dict]:
     if not by_security_id:
         return events
 
-    quotes = _fetch_quotes(api_client, option_positions)
+    quotes = _fetch_quotes(api_client, option_positions, max_age=1.0)  # exits: fresh, never stale
 
     for security_id, pos in by_security_id.items():
         quote = quotes.get(str(security_id))
@@ -120,7 +128,8 @@ def fetch_option_ltp_map(broker: PaperBroker, api_client) -> dict:
     if not security_ids:
         return {}
 
-    quotes = _fetch_quotes(api_client, option_positions)
+    # Display only: the cache TTL applies, and a rate-limited fetch falls back to recent prices.
+    quotes = _fetch_quotes(api_client, option_positions, max_age=SETTINGS.dhan.quote_cache_ttl_sec, stale_ok_for=30.0)
     ltp_map = {}
     for sid in security_ids:
         quote = quotes.get(str(sid))

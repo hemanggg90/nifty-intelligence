@@ -15,7 +15,7 @@ from quant_intelligence.utils.timeutil import now_ist
 from typing import Callable
 
 from quant_intelligence.config.settings import SETTINGS
-from quant_intelligence.execution.auto_trader import run_auto_option_cycle
+from quant_intelligence.execution.auto_trader import chain_needed, run_auto_option_cycle
 from quant_intelligence.execution.position_monitor import monitor_option_positions
 from quant_intelligence.options.option_selector import fetch_chain
 from quant_intelligence.research.pipeline import run_pipeline
@@ -56,10 +56,20 @@ def run_multi_instrument_cycle(
             rows.append({"symbol": symbol, "type": kind, "strategy": "-", "status": "DATA_ERROR", "detail": str(e)})
             continue
 
-        chain = None
-        if client.is_configured():
+        # The chain is fetched lazily, only if this instrument's strategy actually triggers (see
+        # run_auto_option_cycle) - not for every instrument every cycle.
+        chain_provider = (
+            (lambda sym=symbol: fetch_chain(client, sym, SETTINGS.option_expiry_preference))
+            if client.is_configured()
+            else None
+        )
+
+        # Not under broker_lock: the chain fetch can take seconds (rate-limited) and must not block
+        # the other runner's fills. The lock is taken around the decision/fill below.
+        triggered_chain = None
+        if chain_provider is not None and chain_needed(output, symbol, broker):
             try:
-                chain = fetch_chain(client, symbol, SETTINGS.option_expiry_preference)
+                triggered_chain = chain_provider()
             except Exception as e:
                 rows.append(
                     {
@@ -74,7 +84,9 @@ def run_multi_instrument_cycle(
 
         with broker_lock:
             account = get_account()  # fresh cash/exposure: another runner may have filled meanwhile
-            cycle = run_auto_option_cycle(output, symbol, broker, client, chain, account)
+            cycle = run_auto_option_cycle(
+                output, symbol, broker, client, triggered_chain if triggered_chain is not None else chain_provider, account
+            )
             if cycle.order is not None:
                 if on_fill is not None and cycle.order.status == "FILLED":
                     on_fill()

@@ -6,6 +6,10 @@ into data_cache/csv) -> Dhan (if credentials configured). There is NO
 synthetic fallback: if neither source yields data, DataUnavailableError is
 raised. Results are cached to Parquet in data_cache/parquet_cache.
 
+Cached candles are refreshed only when a new bar has CLOSED (about one small request per
+instrument per bar), fetching just the missing tail and merging it into the cache. That keeps signals
+on the latest closed bar while staying far below Dhan's data-API limits.
+
 Every fetch runs through data-quality validation and records a
 MarketDataMetadata row so the system has an auditable record of what data
 backed every decision.
@@ -13,6 +17,8 @@ backed every decision.
 from __future__ import annotations
 
 import datetime as dt
+import threading
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -29,16 +35,23 @@ from quant_intelligence.data.quality import (
     validate_ohlcv,
 )
 from quant_intelligence.utils.logging_utils import log_event
-from quant_intelligence.utils.market_calendar import most_recent_expected_bar_time
+from quant_intelligence.utils.market_calendar import expected_last_closed_bar_start, most_recent_expected_bar_time
 from quant_intelligence.utils.market_profile import profile_for
 
 CACHE_DIR = Path(DATA_CACHE_DIR) / "parquet_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-# Must match validate_ohlcv's default staleness_threshold_minutes: a cache that
-# validate_ohlcv would flag as stale must not be reused as-is - it has to be
-# refetched instead, or every call just re-derives the same DEGRADED verdict.
+# Kept for reference: validate_ohlcv's default staleness threshold. Cache freshness is now decided by
+# whether a newer bar has closed (expected_last_closed_bar_start), not by this age.
 CACHE_STALENESS_THRESHOLD_MINUTES = 30
+
+# After asking Dhan for new bars, don't ask again for the same instrument for this long: a just-closed
+# bar may not be published yet, and every runner/tab reaching here would otherwise re-request it.
+MIN_REFETCH_INTERVAL_SEC = 20.0
+# A cache older than this is rebuilt in full (a long tail request would fall back to daily candles).
+MAX_TAIL_GAP_DAYS = 30
+_last_attempt: dict[tuple[str, str], float] = {}
+_attempt_lock = threading.Lock()
 
 
 class DataUnavailableError(RuntimeError):
@@ -71,17 +84,30 @@ class DataManager:
             cached["timestamp"] = pd.to_datetime(cached["timestamp"])
             in_range = cached[(cached["timestamp"] >= start) & (cached["timestamp"] <= end)]
             if len(in_range) > 0:
-                last_cached = in_range["timestamp"].max().to_pydatetime()
-                reference = most_recent_expected_bar_time(end, profile_for(instrument))
-                if last_cached.tzinfo is None:
-                    last_cached = last_cached.replace(tzinfo=reference.tzinfo)
-                cache_is_fresh = (reference - last_cached) <= dt.timedelta(
-                    minutes=CACHE_STALENESS_THRESHOLD_MINUTES
-                )
-                if cache_is_fresh:
-                    source = "cache"
-                    df = in_range
-                    return self._finalize(df, instrument, timeframe, source)
+                tf_minutes = _parse_timeframe_minutes(timeframe)
+                last_cached = in_range["timestamp"].max().to_pydatetime().replace(tzinfo=None)
+                expected = expected_last_closed_bar_start(end, profile_for(instrument), tf_minutes)
+                if last_cached >= expected:
+                    return self._finalize(in_range, instrument, timeframe, "cache")  # up to date: no request
+
+                # A newer bar should exist. Fetch only the missing tail (at most once per
+                # MIN_REFETCH_INTERVAL_SEC per instrument) and merge it; fall back to a full fetch only
+                # if the cache is too old to patch.
+                if (end - last_cached).days <= MAX_TAIL_GAP_DAYS:
+                    if not self._may_request(instrument, timeframe):
+                        return self._finalize(in_range, instrument, timeframe, "cache")
+                    merged = self._refresh_tail(instrument, timeframe, cached, last_cached, tf_minutes, end, prefer_source)
+                    if merged is not None:
+                        merged.to_parquet(cache_path, index=False)
+                        in_range = merged[(merged["timestamp"] >= start) & (merged["timestamp"] <= end)]
+                        return self._finalize(in_range, instrument, timeframe, "cache+tail")
+                    # Refresh failed (rate limit, network): serve what we have. The quality gate flags it
+                    # stale/DEGRADED if it is old enough, which forces NO TRADE - never a silent guess.
+                    log_event("data_manager", f"Tail refresh failed for {instrument} {timeframe}; using cached bars", level="WARNING")
+                    return self._finalize(in_range, instrument, timeframe, "cache")
+
+        with _attempt_lock:
+            _last_attempt[(instrument, timeframe)] = time.monotonic()
 
         source, df = self._fetch(instrument, timeframe, start, end, prefer_source)
         if len(df) == 0:
@@ -93,6 +119,28 @@ class DataManager:
             )
         df.to_parquet(cache_path, index=False)
         return self._finalize(df, instrument, timeframe, source)
+
+    def _may_request(self, instrument: str, timeframe: str) -> bool:
+        """Claim the right to ask the data source for this instrument now (spacing across all callers)."""
+        key = (instrument, timeframe)
+        with _attempt_lock:
+            now = time.monotonic()
+            if now - _last_attempt.get(key, float("-inf")) < MIN_REFETCH_INTERVAL_SEC:
+                return False
+            _last_attempt[key] = now
+            return True
+
+    def _refresh_tail(self, instrument, timeframe, cached, last_cached, tf_minutes, end, prefer_source):
+        """Fetch bars from just before the last cached one and merge. None if the fetch failed."""
+        tail_start = last_cached - dt.timedelta(minutes=2 * tf_minutes)
+        source, tail = self._fetch(instrument, timeframe, tail_start, end, prefer_source)
+        if source == "none":
+            return None  # error (already recorded in _last_errors)
+        if len(tail) == 0:
+            return cached  # source answered but the new bar is not published yet
+        merged = pd.concat([cached, tail], ignore_index=True)
+        merged["timestamp"] = pd.to_datetime(merged["timestamp"])
+        return merged.drop_duplicates("timestamp", keep="last").sort_values("timestamp").reset_index(drop=True)
 
     def _fetch(self, instrument, timeframe, start, end, prefer_source) -> tuple[str, pd.DataFrame]:
         order = [prefer_source] if prefer_source else []

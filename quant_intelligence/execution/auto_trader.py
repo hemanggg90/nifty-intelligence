@@ -12,6 +12,7 @@ check (risk engine veto, mandatory-stop-on-SELL) applies identically.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 
 from quant_intelligence.brokers.base_broker import OrderAck, OrderRequest
 from quant_intelligence.brokers.dhan_api_client import DhanApiClient
@@ -66,16 +67,49 @@ def size_position(account: AccountState, entry_price: float, stop_price: float, 
     return lots * lot_size
 
 
+def chain_needed(output: PipelineOutput, underlying: str, broker: PaperBroker) -> bool:
+    """Would `run_auto_option_cycle` need the option chain for this instrument right now?
+
+    Cheap and network-free: True only if a strategy was selected, there is no open position on the
+    underlying, and either it is a chain-aware strategy or its entry setup has triggered on the latest
+    bar. Lets callers fetch the (rate-limited) chain only when it will actually be used, and outside any
+    lock - mirroring the early exits of `run_auto_option_cycle`."""
+    if output.ranking.is_no_trade:
+        return False
+    if any(pos["instrument"] == underlying for pos in broker.get_open_positions()):
+        return False
+    strategy_name = output.ranking.selected_strategy
+    if strategy_name in CHAIN_AWARE_STRATEGY_NAMES:
+        return True
+    strategy = get_strategy(strategy_name)
+    status = detect_setup(strategy, output.market_state, output.ohlcv.tail(5))
+    return status.status == SETUP_TRIGGERED
+
+
 def run_auto_option_cycle(
     output: PipelineOutput,
     underlying: str,
     broker: PaperBroker,
     client: DhanApiClient,
-    chain: ChainSnapshot | None,
+    chain: "ChainSnapshot | Callable[[], ChainSnapshot | None] | None",
     account: AccountState,
 ) -> AutoCycleResult:
-    """One automatic cycle for the index/options paper-trading flow (07_Paper_Trading)."""
+    """One automatic cycle for the index/options paper-trading flow (07_Paper_Trading).
+
+    `chain` is a ready ChainSnapshot, None, or a zero-argument PROVIDER. A provider is called only
+    when the chain is actually needed - a chain-aware strategy was selected, or a setup triggered and
+    a contract must be resolved. Most instruments most cycles are NO TRADE or still waiting, so this
+    avoids fetching ~25 option chains per scan (Dhan allows one every 3 seconds per account).
+    """
     result = AutoCycleResult(instrument=underlying)
+    chain_holder = {"chain": chain}
+
+    def get_chain() -> "ChainSnapshot | None":
+        value = chain_holder["chain"]
+        if callable(value):
+            value = value()  # may raise (rate limit, network); handled by the callers below
+            chain_holder["chain"] = value
+        return value
 
     if output.ranking.is_no_trade:
         result.reason = f"NO TRADE: {output.ranking.reason}"
@@ -91,15 +125,19 @@ def run_auto_option_cycle(
     recent_ohlcv = output.ohlcv.tail(5)
     is_chain_strategy = strategy_name in CHAIN_AWARE_STRATEGY_NAMES
 
-    if is_chain_strategy and chain is None:
-        result.reason = f"{strategy_name} needs a live option chain - none fetched."
-        return result
-
-    setup_status = (
-        detect_chain_setup(strategy, output.market_state, recent_ohlcv, chain)
-        if is_chain_strategy
-        else detect_setup(strategy, output.market_state, recent_ohlcv)
-    )
+    if is_chain_strategy:
+        try:
+            chain_now = get_chain()
+        except Exception as e:
+            result.setup_status = "CHAIN_ERROR"
+            result.reason = f"Option chain unavailable: {e}"
+            return result
+        if chain_now is None:
+            result.reason = f"{strategy_name} needs a live option chain - none fetched."
+            return result
+        setup_status = detect_chain_setup(strategy, output.market_state, recent_ohlcv, chain_now)
+    else:
+        setup_status = detect_setup(strategy, output.market_state, recent_ohlcv)
     result.setup_status = setup_status.status
 
     if setup_status.status != SETUP_TRIGGERED:
@@ -109,6 +147,12 @@ def run_auto_option_cycle(
     setup = setup_status.setup
     transaction = setup.meta.get("transaction", "BUY")
 
+    try:
+        chain = get_chain()  # first (and only) fetch for a non-chain strategy: the setup has triggered
+    except Exception as e:
+        result.setup_status = "CHAIN_ERROR"
+        result.reason = f"Setup triggered but the option chain could not be fetched: {e}"
+        return result
     if chain is None or chain.underlying != underlying:
         result.reason = "Setup triggered but no live option chain available to resolve a contract."
         return result

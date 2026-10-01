@@ -50,3 +50,21 @@ def most_recent_expected_bar_time(now: dt.datetime, profile: MarketProfile = NSE
         candidate = (candidate - dt.timedelta(days=1)).replace(
             hour=SESSION_CLOSE.hour, minute=SESSION_CLOSE.minute, second=0, microsecond=0
         )
+
+
+def expected_last_closed_bar_start(now: dt.datetime, profile: MarketProfile = NSE, tf_minutes: int = 5) -> dt.datetime:
+    """Start time (naive IST) of the most recent bar that has CLOSED as of `now`.
+
+    Bars tile the session from its open in steps of `tf_minutes`. Inside a session that is the bar
+    that finished most recently; before the first bar of the day has closed, or outside the session,
+    it is the last bar of the previous/most recent trading session. Used to decide whether cached
+    candles are up to date, so a fresh request is needed only when a new bar has actually closed.
+    """
+    ref = most_recent_expected_bar_time(now, profile).replace(tzinfo=None)
+    open_dt = ref.replace(hour=profile.open.hour, minute=profile.open.minute, second=0, microsecond=0)
+    elapsed = min((ref - open_dt).total_seconds() / 60.0, float(profile.session_minutes))
+    last_index = int((elapsed - tf_minutes) // tf_minutes)
+    if last_index < 0:
+        # The day's first bar has not closed yet: the last closed bar belongs to the previous session.
+        return expected_last_closed_bar_start(open_dt - dt.timedelta(minutes=1), profile, tf_minutes)
+    return open_dt + dt.timedelta(minutes=last_index * tf_minutes)
