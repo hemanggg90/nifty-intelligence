@@ -1,6 +1,6 @@
 # Quant Strategy Intelligence & Execution System (`nifty-intelligence`)
 
-A research-first trading terminal for Indian **index options (NIFTY, BANKNIFTY)**, **stock options**
+A research-first trading terminal for Indian **index options (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX)**, **stock options**
 (a fixed 15-stock watchlist) and **MCX commodity options**, built as a Streamlit dashboard on top of
 the Dhan broker API.
 
@@ -138,7 +138,7 @@ Run the app and use the sidebar page list. The main page (`app.py`) is the comma
 | 10 Research Reports | Structured reports generated only from stored system data. |
 | 11 System Logs & Health | Dhan connectivity/credentials status and system logs. |
 | **12 Live Options Trading** | Real orders via Dhan - disabled unless fully authorised (see Safety model). |
-| **13 Auto Multi-Instrument Trading** | Background auto-trader over NIFTY, BANKNIFTY and the 15-stock watchlist: control bar, live account/market tiles, a **market watch** (last price, change %, day-range bar, sparkline and the last scan result per instrument), and tabs for positions, scan results, an activity feed (orders, risk vetoes, exits) and today's performance. |
+| **13 Auto Multi-Instrument Trading** | Background auto-trader over NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX and the 15-stock watchlist: control bar, live account/market tiles, a **market watch** (last price, change %, day-range bar, sparkline and the last scan result per instrument), and tabs for positions, scan results, an activity feed (orders, risk vetoes, exits) and today's performance. |
 | **14 Commodity Auto Trading (MCX)** | The same layout for a second, independent background auto-trader for MCX commodities with its own session hours and square-off countdown. |
 
 A sidebar indicator on every page shows when auto-trading is running and offers a Stop button.
@@ -187,7 +187,7 @@ Preference order, per instrument: **CSV files you provide** (`data_cache/csv/<SY
 with `timestamp,open,high,low,close,volume`) -> **Dhan** -> error. Results are cached as Parquet (and refreshed only when a new bar closes - see *Staying under Dhan's rate limits*) in
 `data_cache/parquet_cache/`.
 
-- **Instruments:** NSE equities, NIFTY, BANKNIFTY (Dhan `INDEX` candles) and MCX futures underlyings.
+- **Instruments:** NSE equities, NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX (Dhan `INDEX` candles; SENSEX options route to `BSE_FNO`) and MCX futures underlyings.
 - **Intraday intervals** from Dhan: 1, 5, 15, 25, 60 minutes, up to ~90 days per request; otherwise daily.
 - **Timestamps:** Dhan returns UTC epoch seconds. The adapter proves the timezone from the data
   itself (bars must fall inside the trading session), shifts to naive IST, and refuses data that fits
@@ -374,7 +374,7 @@ SQLite even with no `.env`.
 | `DATABASE_URL` | local SQLite in `data_cache/` | Any SQLAlchemy URL (e.g. Postgres). |
 | `DHAN_CLIENT_ID`, `DHAN_ACCESS_TOKEN` | *(empty)* | Dhan credentials. |
 | `DHAN_BASE_URL` | `https://api.dhan.co/v2` | Dhan API base URL. |
-| `OPTION_UNDERLYINGS` | `NIFTY,BANKNIFTY` | Index underlyings scanned. |
+| `OPTION_UNDERLYINGS` | `NIFTY,BANKNIFTY,FINNIFTY,MIDCPNIFTY,SENSEX` | Index underlyings scanned. |
 | `OPTION_MONEYNESS_OFFSET` | `0` | 0 = ATM; +N = N strikes further OTM. |
 | `OPTION_EXPIRY_PREFERENCE` | `NEAREST` | `NEAREST` or `NEAREST_MONTHLY`. |
 | `OPTION_PRODUCT_TYPE` | `INTRADAY` | `INTRADAY`, `MARGIN` or `CNC` (order product type). |

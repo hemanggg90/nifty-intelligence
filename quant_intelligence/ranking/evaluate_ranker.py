@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 
 from quant_intelligence.backtesting.engine import market_for, max_drawdown_in_r, net_r_multiple, run_backtest
-from quant_intelligence.config.settings import DATA_CACHE_DIR
+from quant_intelligence.config.settings import DATA_CACHE_DIR, SETTINGS
 from quant_intelligence.features.feature_engine import compute_features
 from quant_intelligence.ranking.ranking_engine import rank_and_select
 from quant_intelligence.research.pipeline import _uses_volume, default_quantity
@@ -191,7 +191,7 @@ def main() -> None:
     ap.add_argument("--json")
     ap.add_argument("--max-points", type=int, default=None, help="cap decision points per instrument (speed)")
     args = ap.parse_args()
-    symbols = args.symbols or ["NIFTY", "BANKNIFTY"] + [s["symbol"] for s in WATCHLIST_STOCKS]
+    symbols = args.symbols or list(SETTINGS.option_underlyings) + [s["symbol"] for s in WATCHLIST_STOCKS]
 
     report, _ = evaluate_symbols(symbols, max_points=args.max_points)
     for sym, r in report["per_symbol"].items():

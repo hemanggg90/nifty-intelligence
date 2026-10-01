@@ -1,4 +1,4 @@
-"""Fixed stock watchlist traded together with the indices (NIFTY/BANKNIFTY).
+"""Fixed stock watchlist traded together with the indices (SETTINGS.option_underlyings).
 
 Symbols are Dhan/NSE trading symbols (verified against the Dhan scrip master):
 note HDFC Bank is HDFCBANK and LIC is LICI on NSE.

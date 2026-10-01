@@ -30,10 +30,23 @@ from quant_intelligence.options.chain_analytics import ChainSnapshot, parse_opti
 # sizes periodically, so get_underlying_info() always tries to refresh them from the
 # scrip master first (see resolve_derivative_lot_specs) and only falls back to these
 # if that lookup fails (e.g. offline with no cached scrip master yet).
+# `option_segment` overrides the exchange segment option orders/LTP go to (default: the
+# symbol's MarketProfile, NSE_FNO) - SENSEX shares NSE's session hours but trades on BSE.
 UNDERLYING_REGISTRY: dict[str, dict] = {
     "NIFTY": {"security_id": 13, "seg": "IDX_I", "strike_step": 50, "lot_size": 75},
     "BANKNIFTY": {"security_id": 25, "seg": "IDX_I", "strike_step": 100, "lot_size": 30},
+    "FINNIFTY": {"security_id": 27, "seg": "IDX_I", "strike_step": 50, "lot_size": 60},
+    "MIDCPNIFTY": {"security_id": 442, "seg": "IDX_I", "strike_step": 25, "lot_size": 120},
+    "SENSEX": {"security_id": 51, "seg": "IDX_I", "strike_step": 100, "lot_size": 20, "option_segment": "BSE_FNO"},
 }
+
+
+def option_segment_for(symbol: str | None) -> str:
+    """Dhan exchange segment for `symbol`'s option orders and LTP (BSE_FNO / NSE_FNO / MCX_COMM)."""
+    from quant_intelligence.utils.market_profile import profile_for
+
+    entry = UNDERLYING_REGISTRY.get((symbol or "").strip().upper(), {})
+    return entry.get("option_segment") or profile_for(symbol).option_segment
 
 
 class OptionSelectionError(ValueError):

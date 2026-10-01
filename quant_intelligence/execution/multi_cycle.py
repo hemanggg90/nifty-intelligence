@@ -1,6 +1,6 @@
 """One paper-trading scan cycle across many instruments, ALL traded as options.
 
-Indices (NIFTY/BANKNIFTY) and stocks are each run through the research pipeline and,
+Indices (SETTINGS.option_underlyings) and stocks are each run through the research pipeline and,
 when a setup triggers, resolved to an option contract from the live chain and paper-traded
 via `run_auto_option_cycle`. Shared by 07_Paper_Trading ("All instruments together" mode) and
 13_Auto_Multi_Stock_Trading. Streamlit-free: callers pass the account-state getter and

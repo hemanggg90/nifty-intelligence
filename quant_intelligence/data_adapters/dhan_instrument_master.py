@@ -98,7 +98,7 @@ _DERIVATIVE_INSTRUMENT_TYPES = {"OPTSTK", "OPTIDX"}
 
 
 def _load_fno_index() -> dict[str, dict]:
-    """Indexes NSE option (OPTSTK stock + OPTIDX index) rows by underlying symbol.
+    """Indexes NSE option (OPTSTK stock + OPTIDX index) and BSE index-option (SENSEX) rows by underlying symbol.
 
     The scrip master has no dedicated "underlying symbol" column for option
     rows - it's the prefix of SEM_TRADING_SYMBOL before the first "-"
@@ -123,7 +123,9 @@ def _load_fno_index() -> dict[str, dict]:
             instrument = row.get(_COL_INSTRUMENT, "").strip().upper()
             if instrument not in _DERIVATIVE_INSTRUMENT_TYPES:
                 continue
-            if row.get(_COL_SEGMENT, "").strip().upper() != "NSE":
+            exchange = row.get(_COL_SEGMENT, "").strip().upper()
+            # NSE stock + index options, plus BSE index options (SENSEX); BSE stock options are not traded.
+            if not (exchange == "NSE" or (exchange == "BSE" and instrument == "OPTIDX")):
                 continue
             trading_symbol = row.get(_COL_SYMBOL, "").strip().upper()
             symbol = trading_symbol.split("-", 1)[0]
@@ -153,7 +155,7 @@ def _load_fno_index() -> dict[str, dict]:
 
 
 def resolve_derivative_lot_specs(symbol: str) -> dict | None:
-    """Returns {"lot_size", "strike_step"} for any NSE underlying (stock or index)
+    """Returns {"lot_size", "strike_step"} for any NSE underlying (stock or index) or BSE index
     with currently listed options, read fresh from the scrip master. Used both to
     resolve a new stock underlying and to keep a statically registered index's
     lot_size current (exchange-revised periodically)."""

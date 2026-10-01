@@ -22,7 +22,13 @@ from quant_intelligence.execution.capital import capital_summary
 from quant_intelligence.execution.engine import ENGINE
 from quant_intelligence.execution.position_monitor import monitor_option_positions, monitor_positions
 from quant_intelligence.execution.setup_detector import SETUP_TRIGGERED, WAITING_FOR_SETUP, detect_chain_setup, detect_setup
-from quant_intelligence.options.option_selector import OptionSelectionError, fetch_chain, get_underlying_info, select_contract
+from quant_intelligence.options.option_selector import (
+    OptionSelectionError,
+    fetch_chain,
+    get_underlying_info,
+    option_segment_for,
+    select_contract,
+)
 from quant_intelligence.options.premium_model import PremiumSizingError, translate_setup
 from quant_intelligence.risk.risk_engine import ProposedTrade, evaluate_trade
 from quant_intelligence.strategies.registry import CHAIN_AWARE_STRATEGY_NAMES, get_strategy
@@ -53,7 +59,7 @@ page_header(
 scope = st.segmented_control("Scope", ["Single instrument", "All instruments"], default="Single instrument",
                              key="pt_scope", label_visibility="collapsed") or "Single instrument"
 if scope == "All instruments":
-    st.caption("Scans NIFTY, BANKNIFTY and the stock watchlist in one pass. One paper account and one risk engine are shared.")
+    st.caption(f"Scans {', '.join(SETTINGS.option_underlyings)} and the stock watchlist in one pass. One paper account and one risk engine are shared.")
     render_multi_instrument_panel()
     st.stop()
 
@@ -313,7 +319,7 @@ with side:
                                 quantity=quantity, order_type="MARKET", price=premium_setup.entry_price,
                                 stop_price=premium_setup.stop_price, target_price=premium_setup.target_price,
                                 decision_id=decision.decision_id, security_id=contract.security_id,
-                                exchange_segment=profile_for(underlying).option_segment,
+                                exchange_segment=option_segment_for(underlying),
                                 product_type=SETTINGS.option_product_type, transaction_type=contract.transaction,
                                 option_type=contract.option_type, strike=contract.strike, expiry=contract.expiry,
                                 lot_size=contract.lot_size,

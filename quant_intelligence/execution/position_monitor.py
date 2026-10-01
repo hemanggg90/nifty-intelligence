@@ -18,9 +18,9 @@ import pandas as pd
 
 from quant_intelligence.brokers.paper_broker import PaperBroker
 from quant_intelligence.config.settings import SETTINGS
+from quant_intelligence.options.option_selector import option_segment_for
 from quant_intelligence.regimes.regime_engine import classify_regime
 from quant_intelligence.utils.logging_utils import log_event
-from quant_intelligence.utils.market_profile import profile_for
 
 
 def _fetch_quotes(api_client, positions: list[dict], max_age: float = 1.0, stale_ok_for: float = 0.0) -> dict:
@@ -32,7 +32,7 @@ def _fetch_quotes(api_client, positions: list[dict], max_age: float = 1.0, stale
     for p in positions:
         if not p.get("security_id"):
             continue
-        segment = profile_for(p.get("underlying") or p.get("instrument")).option_segment
+        segment = option_segment_for(p.get("underlying") or p.get("instrument"))
         by_segment.setdefault(segment, []).append(int(p["security_id"]))
     if not by_segment:
         return {}

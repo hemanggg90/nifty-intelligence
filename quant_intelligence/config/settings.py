@@ -128,7 +128,7 @@ class Settings:
 
     # Options trading (see quant_intelligence/options/)
     option_underlyings: tuple[str, ...] = tuple(
-        s.strip().upper() for s in os.getenv("OPTION_UNDERLYINGS", "NIFTY,BANKNIFTY").split(",") if s.strip()
+        s.strip().upper() for s in os.getenv("OPTION_UNDERLYINGS", "NIFTY,BANKNIFTY,FINNIFTY,MIDCPNIFTY,SENSEX").split(",") if s.strip()
     )
     option_moneyness_offset: int = _int_env("OPTION_MONEYNESS_OFFSET", 0)  # 0=ATM, +N = N strikes OTM
     option_expiry_preference: str = os.getenv("OPTION_EXPIRY_PREFERENCE", "NEAREST").strip().upper()

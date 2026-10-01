@@ -25,13 +25,17 @@ from quant_intelligence.execution.setup_detector import (
     detect_setup,
 )
 from quant_intelligence.options.chain_analytics import ChainSnapshot
-from quant_intelligence.options.option_selector import OptionSelectionError, get_underlying_info, select_contract
+from quant_intelligence.options.option_selector import (
+    OptionSelectionError,
+    get_underlying_info,
+    option_segment_for,
+    select_contract,
+)
 from quant_intelligence.options.premium_model import PremiumSizingError, translate_setup
 from quant_intelligence.research.pipeline import PipelineOutput
 from quant_intelligence.execution.capital import capital_required, capital_summary
 from quant_intelligence.risk.risk_engine import AccountState, ProposedTrade, evaluate_trade
 from quant_intelligence.strategies.registry import CHAIN_AWARE_STRATEGY_NAMES, get_strategy
-from quant_intelligence.utils.market_profile import profile_for
 
 
 @dataclass
@@ -208,7 +212,7 @@ def run_auto_option_cycle(
         target_price=premium_setup.target_price,
         decision_id=decision.decision_id,
         security_id=contract.security_id,
-        exchange_segment=profile_for(underlying).option_segment,
+        exchange_segment=option_segment_for(underlying),
         product_type=SETTINGS.option_product_type,
         transaction_type=contract.transaction,
         option_type=contract.option_type,

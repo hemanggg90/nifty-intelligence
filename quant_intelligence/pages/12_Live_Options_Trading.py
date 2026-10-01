@@ -14,6 +14,7 @@ from quant_intelligence.options.option_selector import (
     OptionSelectionError,
     fetch_chain,
     get_underlying_info,
+    option_segment_for,
     select_contract,
 )
 from quant_intelligence.options.premium_model import PremiumSizingError, translate_setup
@@ -176,7 +177,7 @@ if st.button("Submit to Risk Engine -> DhanBroker (LIVE)", type="primary", disab
             target_price=premium_setup.target_price,
             decision_id=decision.decision_id,
             security_id=contract.security_id,
-            exchange_segment="NSE_FNO",
+            exchange_segment=option_segment_for(underlying),
             product_type=SETTINGS.option_product_type,
             transaction_type=contract.transaction,
             option_type=contract.option_type,

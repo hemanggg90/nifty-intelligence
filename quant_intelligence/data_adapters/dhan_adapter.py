@@ -1,12 +1,12 @@
 """
 Dhan market-data adapter.
 
-STATUS: wired up for NSE equities and the NIFTY/BANKNIFTY indices via the Dhan v2
+STATUS: wired up for NSE equities and the registered indices (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX) via the Dhan v2
 `/charts/historical` and `/charts/intraday` endpoints. Populate DHAN_CLIENT_ID /
 DHAN_ACCESS_TOKEN (or use the dashboard sidebar) to activate. There is no
 synthetic fallback: with no CSV data and no working Dhan credentials, the
 DataManager raises DataUnavailableError. Index candles carry no traded volume
-from Dhan, so volume-based features are unreliable for NIFTY/BANKNIFTY.
+from Dhan, so volume-based features are unreliable for the indices.
 
 """
 from __future__ import annotations
@@ -63,7 +63,7 @@ class DhanAdapter(DataAdapter):
         if resolved is None:
             raise RuntimeError(
                 f"'{instrument}' could not be resolved to a Dhan security_id "
-                "(supported: NIFTY, BANKNIFTY, NSE equities and the MCX commodity watchlist)."
+                "(supported: NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX, NSE equities and the MCX commodity watchlist)."
             )
 
         client = self._client or DhanApiClient(self.client_id, self.access_token)
