@@ -51,6 +51,7 @@ MIN_REFETCH_INTERVAL_SEC = 20.0
 # A cache older than this is rebuilt in full (a long tail request would fall back to daily candles).
 MAX_TAIL_GAP_DAYS = 30
 _last_attempt: dict[tuple[str, str], float] = {}
+_last_refresh_error: dict[tuple[str, str], str] = {}  # why the latest refresh of an instrument failed
 _attempt_lock = threading.Lock()
 
 
@@ -95,16 +96,21 @@ class DataManager:
                 # if the cache is too old to patch.
                 if (end - last_cached).days <= MAX_TAIL_GAP_DAYS:
                     if not self._may_request(instrument, timeframe):
-                        return self._finalize(in_range, instrument, timeframe, "cache")
+                        return self._finalize(in_range, instrument, timeframe, "cache",
+                                              refresh_error=_last_refresh_error.get((instrument, timeframe)))
                     merged = self._refresh_tail(instrument, timeframe, cached, last_cached, tf_minutes, end, prefer_source)
                     if merged is not None:
+                        _last_refresh_error.pop((instrument, timeframe), None)
                         merged.to_parquet(cache_path, index=False)
                         in_range = merged[(merged["timestamp"] >= start) & (merged["timestamp"] <= end)]
                         return self._finalize(in_range, instrument, timeframe, "cache+tail")
                     # Refresh failed (rate limit, network): serve what we have. The quality gate flags it
                     # stale/DEGRADED if it is old enough, which forces NO TRADE - never a silent guess.
-                    log_event("data_manager", f"Tail refresh failed for {instrument} {timeframe}; using cached bars", level="WARNING")
-                    return self._finalize(in_range, instrument, timeframe, "cache")
+                    reason = "; ".join(self._last_errors) or "no response from the data source"
+                    _last_refresh_error[(instrument, timeframe)] = reason
+                    log_event("data_manager", f"Tail refresh failed for {instrument} {timeframe}; using cached bars ({reason})",
+                              level="WARNING")
+                    return self._finalize(in_range, instrument, timeframe, "cache", refresh_error=reason)
 
         with _attempt_lock:
             _last_attempt[(instrument, timeframe)] = time.monotonic()
@@ -166,7 +172,8 @@ class DataManager:
                     self._last_errors.append(str(e))
         return "none", pd.DataFrame()
 
-    def _finalize(self, df: pd.DataFrame, instrument: str, timeframe: str, source: str) -> tuple[pd.DataFrame, dict]:
+    def _finalize(self, df: pd.DataFrame, instrument: str, timeframe: str, source: str,
+                  refresh_error: str | None = None) -> tuple[pd.DataFrame, dict]:
         tf_minutes = _parse_timeframe_minutes(timeframe)
         # Measure misalignment BEFORE cleaning: clean_ohlcv drops out-of-session bars, which
         # would otherwise hide a wholesale timezone error.
@@ -179,6 +186,10 @@ class DataManager:
         if misaligned / max(len(df) + misaligned, 1) > MAX_OUT_OF_SESSION_FRACTION:
             report.status = QUALITY_FAIL
             report.issues.append(f"{misaligned} bars outside the {profile.label} session before cleaning (timezone/data error)")
+
+        if refresh_error:
+            # Say WHY the data is old: the quality gate only knows it is stale, not that the refresh failed.
+            report.issues.append(f"latest refresh failed: {refresh_error}")
 
         metadata = {
             "instrument": instrument,

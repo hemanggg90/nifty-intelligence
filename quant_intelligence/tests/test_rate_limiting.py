@@ -360,6 +360,7 @@ def dm(monkeypatch, tmp_path):
 
     monkeypatch.setattr(dm_module, "CACHE_DIR", tmp_path)
     dm_module._last_attempt.clear()
+    dm_module._last_refresh_error.clear()
     manager = dm_module.DataManager()
     manager.fetches = []
     return manager, dm_module, tmp_path
@@ -466,3 +467,52 @@ def test_the_auth_block_expires_on_its_own():
     assert lim.auth_block_remaining("other") == 0.0
     ft.t += 301
     assert lim.auth_block_remaining("t") == 0.0
+
+
+# ---------------------------------------------------------------- "why is the data degraded?" must be answerable
+def test_a_failed_refresh_is_reported_as_the_reason_the_data_is_old(dm):
+    manager, _, tmp = dm
+    _seed(tmp, "2026-09-29 09:15", "2026-09-29 09:55")
+
+    def failing_fetch(*a):
+        manager._last_errors = ["Dhan rejected your credentials (401)"]
+        return "none", pd.DataFrame()
+
+    manager._fetch = failing_fetch
+    df, meta = manager.get_ohlcv("TCS", "5min", START, END)
+    issues = meta["quality_report"]["issues"]
+    assert any("latest refresh failed: Dhan rejected your credentials (401)" in i for i in issues)
+    assert meta["quality_status"] != "OK"
+
+    # a second caller inside the retry-spacing window still sees the same explanation
+    _, meta2 = manager.get_ohlcv("TCS", "5min", START, END)
+    assert any("latest refresh failed" in i for i in meta2["quality_report"]["issues"])
+
+
+def test_stale_message_is_human_readable():
+    from quant_intelligence.data.quality import validate_ohlcv
+
+    ts = pd.date_range("2026-09-29 09:15", periods=60, freq="5min")
+    df = pd.DataFrame({"timestamp": ts, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 1.0})
+    report = validate_ohlcv(df, 5, now=dt.datetime(2026, 10, 1, 16, 42))
+    stale = next(i for i in report.issues if "stale" in i)
+    assert "29 Sep 14:10" in stale and "01 Oct 15:30" in stale and "2d" in stale  # NSE closed at 15:30
+    assert "+05:30" not in stale and "000" not in stale  # no raw timestamps / microseconds
+
+
+def test_no_trade_reason_names_the_data_problem(monkeypatch):
+    from quant_intelligence.data.data_manager import DataManager
+    from quant_intelligence.data_adapters.synthetic import SyntheticAdapter
+    from quant_intelligence.research.pipeline import run_pipeline
+
+    end = dt.datetime(2024, 6, 28, 15, 30)
+    start = end - dt.timedelta(days=40)
+    frame = SyntheticAdapter().get_ohlcv("NIFTY", "5min", start, end)
+    meta = {"quality_status": "DEGRADED", "quality_report": {
+        "issues": ["data is stale: last bar 29 Sep 15:00, 2d 1h behind the 01 Oct 16:42 IST market clock",
+                   "latest refresh failed: Dhan rejected your credentials (401)"]}}
+    monkeypatch.setattr(DataManager, "get_ohlcv", lambda self, *a, **k: (frame, meta))
+    out = run_pipeline("NIFTY", "5min", start, end)
+    assert out.ranking.is_no_trade
+    assert "DEGRADED" in out.ranking.reason and "Dhan rejected your credentials" in out.ranking.reason
+    assert out.data_quality_issues == meta["quality_report"]["issues"]

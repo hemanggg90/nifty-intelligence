@@ -48,6 +48,7 @@ class PipelineOutput:
     regime_confidence: float
     strategy_intel: list[StrategyIntelligence]
     ranking: RankingDecision
+    data_quality_issues: list = field(default_factory=list)
 
 
 def run_pipeline(
@@ -115,6 +116,10 @@ def run_pipeline(
         scores.append(assessment.score)
 
     ranking = rank_and_select(scores, data_quality_status)
+    quality_issues = list(metadata.get("quality_report", {}).get("issues", []))
+    if ranking.is_no_trade and data_quality_status != "OK" and quality_issues:
+        # "Data quality is DEGRADED" alone does not tell the user what to fix; add the actual findings.
+        ranking.reason = f"{ranking.reason} - " + "; ".join(quality_issues)
 
     log_event(
         "pipeline",
@@ -134,6 +139,7 @@ def run_pipeline(
         regime_confidence=conf,
         strategy_intel=strategy_intel,
         ranking=ranking,
+        data_quality_issues=quality_issues,
     )
 
 

@@ -121,7 +121,12 @@ def validate_ohlcv(
         last_ts_py = last_ts_py.replace(tzinfo=reference.tzinfo)
     is_stale = bool((reference - last_ts_py) > dt.timedelta(minutes=staleness_threshold_minutes))
     if is_stale:
-        issues.append(f"data is stale: last bar at {last_timestamp}, expected as of {reference}")
+        behind = reference - last_ts_py
+        age = f"{behind.days}d {behind.seconds // 3600}h" if behind.days else f"{behind.seconds // 3600}h {behind.seconds % 3600 // 60}m"
+        issues.append(
+            f"data is stale: last bar {pd.Timestamp(last_timestamp):%d %b %H:%M}, "
+            f"{age} behind the {reference:%d %b %H:%M} IST market clock"
+        )
 
     # Determine overall status.
     hard_fail = n_zero_or_negative > 0 or n_ohlc_violations > 0 or n_rows < 5 or n_out_of_session > 0
