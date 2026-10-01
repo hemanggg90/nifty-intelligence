@@ -142,6 +142,11 @@ class DataManager:
         source, tail = self._fetch(instrument, timeframe, tail_start, end, prefer_source)
         if source == "none":
             return None  # error (already recorded in _last_errors)
+        if len(tail) > 0:
+            # Only bars from the requested window may be merged: anything older (e.g. a misaligned
+            # clock) would otherwise overwrite good cached bars via drop_duplicates(keep="last").
+            tail = tail.assign(timestamp=pd.to_datetime(tail["timestamp"]))
+            tail = tail[tail["timestamp"] >= tail_start]
         if len(tail) == 0:
             return cached  # source answered but the new bar is not published yet
         merged = pd.concat([cached, tail], ignore_index=True)
@@ -215,6 +220,7 @@ class DataManager:
             "data_manager",
             f"Fetched {len(df)} rows for {instrument} {timeframe} from {source}: {report.status}",
             level="WARNING" if report.status != "OK" else "INFO",
+            **({"issues": report.issues} if report.status != "OK" else {}),
         )
 
         if report.status == QUALITY_FAIL:

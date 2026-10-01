@@ -93,7 +93,7 @@ class DhanAdapter(DataAdapter):
         intraday = tf_minutes in _INTRADAY_ALLOWED_MINUTES and (end - start).days <= _INTRADAY_MAX_DAYS
         df = _map_response_to_ohlcv(body)
         if intraday:
-            df = _align_to_ist_session(df, profile_for(instrument))
+            df = _align_to_ist_session(df, profile_for(instrument), end=end.replace(tzinfo=None))
             df = drop_forming_bar(df, tf_minutes)
         return df
 
@@ -107,15 +107,22 @@ def _in_session_fraction(ts: pd.Series, profile: MarketProfile = NSE) -> float:
     return float(_in_session_mask(ts, profile).mean())
 
 
-def _align_to_ist_session(df: pd.DataFrame, profile: MarketProfile = NSE) -> pd.DataFrame:
+def _align_to_ist_session(df: pd.DataFrame, profile: MarketProfile = NSE,
+                          end: dt.datetime | None = None) -> pd.DataFrame:
     """Return naive-IST timestamps. The epoch's timezone basis is verified from the data
-    itself: bars must fall within the profile's session (NSE 09:15-15:30 IST), so try the raw timestamps and the
-    UTC->IST shift and keep whichever fits. If neither fits, refuse rather than guess -
-    a shifted clock would silently corrupt every session-based feature."""
+    itself: bars must fall within the profile's session (e.g. NSE 09:15-15:30, MCX 09:00-23:55 IST)
+    and, when `end` (naive IST) is given, must not start after it. If neither fits, refuse rather
+    than guess - a shifted clock would silently corrupt every session-based feature.
+
+    The UTC->IST shift (Dhan's epoch basis) is tried first. Under the wide MCX session a short
+    afternoon/evening window of UTC bars (10:10-14:15) also fits unshifted, and keeping it would
+    file today's evening bars 5h30m too early - the cache never advances and goes stale."""
     if df.empty:
         return df
-    for shift in (pd.Timedelta(0), pd.Timedelta(hours=5, minutes=30)):
+    for shift in (pd.Timedelta(hours=5, minutes=30), pd.Timedelta(0)):
         shifted = df["timestamp"] + shift
+        if end is not None and shifted.max() > pd.Timestamp(end):
+            continue  # bars from the future: wrong basis
         if _in_session_fraction(shifted, profile) >= 0.98:
             out = df.copy()
             out["timestamp"] = shifted

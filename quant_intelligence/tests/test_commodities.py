@@ -123,6 +123,37 @@ def test_dhan_timestamps_are_aligned_against_the_mcx_session():
     assert out["timestamp"].iloc[-1] == pd.Timestamp("2026-09-29 23:30")
 
 
+def test_evening_tail_refresh_is_shifted_to_ist_not_kept_as_utc():
+    # A 15:40-19:45 IST tail arrives as 10:10-14:15 UTC, which also fits inside 09:00-23:55 unshifted.
+    # Keeping it unshifted filed evening bars 5h30m early and left MCX data stale all evening.
+    utc = pd.date_range("2026-10-01 10:10", "2026-10-01 14:15", freq="5min")
+    df = pd.DataFrame({"timestamp": utc, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0})
+    out = _align_to_ist_session(df, MCX, end=dt.datetime(2026, 10, 1, 19, 47))
+    assert out["timestamp"].iloc[0] == pd.Timestamp("2026-10-01 15:40")
+    assert out["timestamp"].iloc[-1] == pd.Timestamp("2026-10-01 19:45")
+
+
+def test_ist_labelled_evening_bars_are_not_pushed_into_the_future():
+    ist = pd.date_range("2026-10-01 15:40", "2026-10-01 19:40", freq="5min")
+    df = pd.DataFrame({"timestamp": ist, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0})
+    out = _align_to_ist_session(df, MCX, end=dt.datetime(2026, 10, 1, 19, 47))
+    assert out["timestamp"].iloc[-1] == pd.Timestamp("2026-10-01 19:40")
+
+
+def test_tail_rows_older_than_the_request_never_overwrite_the_cache():
+    from quant_intelligence.data.data_manager import DataManager
+
+    cached = pd.DataFrame({"timestamp": pd.date_range("2026-10-01 09:00", "2026-10-01 15:50", freq="5min"),
+                           "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0})
+    stale_tail = pd.DataFrame({"timestamp": pd.date_range("2026-10-01 10:10", periods=5, freq="5min"),
+                               "open": 9.0, "high": 9.0, "low": 9.0, "close": 9.0, "volume": 9.0})
+    dm = DataManager()
+    dm._fetch = lambda *a, **k: ("dhan", stale_tail)
+    merged = dm._refresh_tail("CRUDEOIL", "5min", cached, dt.datetime(2026, 10, 1, 15, 50), 5,
+                              dt.datetime(2026, 10, 1, 19, 47), None)
+    assert merged["close"].eq(1.0).all() and len(merged) == len(cached)
+
+
 def test_option_orders_and_ltp_use_the_commodity_segment():
     positions = [
         {"security_id": "580499", "underlying": "CRUDEOIL", "option_type": "CE"},
