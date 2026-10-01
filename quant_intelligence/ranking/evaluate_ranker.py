@@ -21,11 +21,11 @@ from dataclasses import asdict, dataclass
 import numpy as np
 import pandas as pd
 
-from quant_intelligence.backtesting.engine import max_drawdown_in_r, net_r_multiple, run_backtest
+from quant_intelligence.backtesting.engine import market_for, max_drawdown_in_r, net_r_multiple, run_backtest
 from quant_intelligence.config.settings import DATA_CACHE_DIR
 from quant_intelligence.features.feature_engine import compute_features
 from quant_intelligence.ranking.ranking_engine import rank_and_select
-from quant_intelligence.research.pipeline import _uses_volume
+from quant_intelligence.research.pipeline import _uses_volume, default_quantity
 from quant_intelligence.research.ranking_core import assess_observations, observations_from_trades
 from quant_intelligence.strategies.registry import get_all_strategies
 from quant_intelligence.utils.market_profile import profile_for
@@ -45,12 +45,14 @@ class Decision:
 def evaluate_instrument(
     ohlcv: pd.DataFrame,
     instrument: str,
-    quantity: int = 50,
+    quantity: int | None = None,
     warmup_frac: float = 0.4,
     min_history_bars: int = 400,
     strategies=None,
     max_points: int | None = None,
 ) -> list[Decision]:
+    quantity = quantity or default_quantity(instrument)
+    market = market_for(instrument)
     ohlcv = ohlcv.sort_values("timestamp").reset_index(drop=True)
     features = compute_features(ohlcv, profile_for(instrument))
     feat_by_ts = features.set_index("timestamp")
@@ -67,7 +69,7 @@ def evaluate_instrument(
         trades = [t for t in bt.trades if t.setup.timestamp in feat_by_ts.index]
         if not trades:
             continue  # never produces a setup -> permanently INSUFFICIENT_DATA, cannot affect selection
-        obs = observations_from_trades(trades, feat_by_ts, strat.name, quantity)
+        obs = observations_from_trades(trades, feat_by_ts, strat.name, quantity, market)
         entry_idx = np.array([ts_to_idx[t.setup.timestamp] for t in trades])
         exit_idx = np.array([ts_to_idx.get(t.exit_timestamp, len(ohlcv)) for t in trades])
         obs["entry_idx"], obs["exit_idx"] = entry_idx, exit_idx
@@ -75,8 +77,8 @@ def evaluate_instrument(
             "obs": obs,
             "entry_idx": entry_idx,
             "exit_idx": exit_idx,
-            "net_r_arr": np.array([net_r_multiple(t, quantity) for t in trades]),
-            "net_r": {int(ts_to_idx[t.setup.timestamp]): net_r_multiple(t, quantity) for t in trades},
+            "net_r_arr": np.array([net_r_multiple(t, quantity, market) for t in trades]),
+            "net_r": {int(ts_to_idx[t.setup.timestamp]): net_r_multiple(t, quantity, market) for t in trades},
         }
 
     start_idx = max(int(len(ohlcv) * warmup_frac), min_history_bars)

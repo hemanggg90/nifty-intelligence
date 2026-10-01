@@ -55,8 +55,10 @@ def run_pipeline(
     timeframe: str,
     start: dt.datetime,
     end: dt.datetime,
-    quantity: int = 50,
+    quantity: int | None = None,
 ) -> PipelineOutput:
+    quantity = quantity or default_quantity(instrument)
+    market = profile_for(instrument).name
     data_manager = DataManager()
     ohlcv, metadata = data_manager.get_ohlcv(instrument, timeframe, start, end)
 
@@ -96,7 +98,8 @@ def run_pipeline(
     for strategy in strategies:
         backtest = run_backtest(strategy, ohlcv, features, instrument, split="RESEARCH", quantity=quantity)
         assessment = assess_strategy(
-            strategy.name, backtest.trades, feat_by_ts, market_state.features, quantity, metrics=backtest.metrics
+            strategy.name, backtest.trades, feat_by_ts, market_state.features, quantity,
+            metrics=backtest.metrics, market=market,
         )
 
         strategy_intel.append(
@@ -132,6 +135,17 @@ def run_pipeline(
         strategy_intel=strategy_intel,
         ranking=ranking,
     )
+
+
+def default_quantity(instrument: str, fallback: int = 50) -> int:
+    """Units traded per backtest trade = the instrument's option lot size (this sets the weight of
+    the fixed per-order brokerage). Falls back to `fallback` if the lot size cannot be resolved."""
+    try:
+        from quant_intelligence.options.option_selector import get_underlying_info
+
+        return int(get_underlying_info(instrument)["lot_size"]) or fallback
+    except Exception:
+        return fallback
 
 
 _VOLUME_FEATURES = {"relative_volume", "volume_acceleration", "vwap", "vwap_distance_pct"}

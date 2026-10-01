@@ -206,17 +206,29 @@ with `timestamp,open,high,low,close,volume`) -> **Dhan** -> error. Results are c
   distribution over TREND_UP, TREND_DOWN, RANGE, COMPRESSION, VOL_EXPANSION, VOL_CONTRACTION,
   HIGH_VOL, LOW_VOL, EVENT_DRIVEN, LIQUIDITY_STRESS. No machine learning.
 - **Backtesting** (`backtesting/engine.py`): sequential, non-overlapping trades per strategy, 75-bar
-  maximum hold, costs applied (brokerage x2, STT on turnover, slippage). Supports in-sample /
-  out-of-sample splits and rolling walk-forward.
+  maximum hold. Costs follow how the trade is actually made - as an **option**: Dhan's Rs 20 per order
+  (x2) plus STT (sell-side premium), exchange charge, SEBI fee, stamp duty and 18% GST on *premium*
+  turnover, plus slippage; NSE and MCX use their own STT/exchange rates. Because the backtest only has
+  underlying prices, the premium is an assumption (`OPTION_PREMIUM_PCT` of the underlying, `OPTION_DELTA`).
+  Ranking works in **net-of-cost R**. Supports in-sample / out-of-sample splits and rolling walk-forward.
 - **Analogues** (`analogues/analogue_engine.py`): a transparent k-NN. The current market state is
   compared (standardised distance) against the entry-time features of every past setup using six
   features - `trend_slope`, `momentum_20`, `atr_percentile_100`, `vol_expansion`, `relative_volume`,
   `vwap_distance_pct`. The 30 nearest give conditional expected R, win rate, median R and confidence.
-- **Ranking** (`ranking/ranking_engine.py`): a visible score
-  `0.5*expected_R + 0.3*(P(win)-0.5) + 0.3*confidence_weight - 0.2*drawdown_penalty - cost_penalty`,
-  with every component exposed. A strategy is *eligible* only with expected R >= 0.05 and confidence
-  >= MEDIUM. NO TRADE is returned if data quality is not OK, nothing is eligible, or the top two scores
-  differ by < 0.08.
+- **Ranking** (`ranking/ranking_engine.py`, shared with the live pipeline through
+  `research/ranking_core.py`): a visible score
+  `0.5*edge + 0.3*(P(win)-0.5) + 0.3*confidence_weight - 0.2*drawdown_penalty - cost_penalty`, every
+  component exposed. The `edge` is a **shrunk lower confidence bound** of the conditional net-of-cost
+  expected R (shrunk toward the strategy's own average, then minus one standard error). Confidence is
+  based on how many *independent trading days* the analogues span, and the standard error is
+  cluster-robust by day. Drawdown is measured in R. A strategy is *eligible* only with a shrunk edge
+  >= 0.05, confidence >= MEDIUM, and (with enough history) a positive edge in at least half of four
+  chronological folds. NO TRADE is returned if data quality is not OK, nothing is eligible, or the top two
+  are not statistically distinguishable (edge difference < 1 combined standard error).
+- **Ranker evaluator** (`ranking/evaluate_ranker.py`): a walk-forward test of the ranker itself. At each
+  decision point it ranks using only trades already closed, then compares the selected strategy's realised
+  net R with picking a strategy at random. Run `python -m quant_intelligence.ranking.evaluate_ranker`
+  (uses the candles already in `data_cache/`; no network).
 
 ## Options layer
 
@@ -350,7 +362,16 @@ SQLite even with no `.env`.
 | `MAX_PORTFOLIO_EXPOSURE_PCT` | `20.0` | Total capital at risk. |
 | `MAX_TRADES_PER_DAY` | `6` | Daily trade count limit. |
 | `MAX_DRAWDOWN_PCT` | `8.0` | Max drawdown from peak equity. |
-| `BROKERAGE_PER_ORDER_INR`, `STT_RATE`, `SLIPPAGE_TICKS`, `TICK_SIZE` | `20`, `0.0005`, `1`, `0.05` | Cost assumptions used in backtests and paper fills. |
+| `BROKERAGE_PER_ORDER_INR` | `20` | Dhan's flat brokerage per executed F&O order. |
+| `SLIPPAGE_TICKS`, `TICK_SIZE` | `1`, `0.05` | Slippage in premium units; also used for paper fills. |
+| `OPT_STT_SELL_RATE_NSE`, `OPT_STT_SELL_RATE_MCX` | `0.0015`, `0.0005` | STT on sell-side option premium. |
+| `OPT_TXN_RATE_NSE`, `OPT_TXN_RATE_MCX` | `0.0003553`, `0.000418` | Exchange charge on premium turnover. |
+| `SEBI_RATE`, `STAMP_BUY_RATE`, `GST_RATE` | `0.000001`, `0.00003`, `0.18` | SEBI fee, buy-side stamp duty, GST on brokerage + exchange + SEBI. |
+| `OPTION_PREMIUM_PCT`, `OPTION_DELTA` | `1.5`, `0.5` | Assumed option premium (% of the underlying's price) and delta used to convert the underlying backtest into option P&L and costs. |
+
+> The statutory rates are the published exchange/government charges (taken from Zerodha's public charges
+> table, since Dhan's pricing page lists only brokerage, GST and the SEBI fee). Check them against your own
+> Dhan contract note and override via the variables above if they differ.
 
 Watchlists live in code: **`config/watchlist.py`** (15 stocks and 8 MCX commodities).
 
@@ -458,14 +479,17 @@ temporary database and never write to your real one.
 ## Known limitations (read this before trusting a signal)
 
 - **No proven edge.** The strategies are well-known indicator setups. Nothing here has been shown to be
-  profitable after costs, and a walk-forward check of the ranker's picks (17 instruments, ~60 days of 5-minute
-  data, ~260 trades) found **no measurable advantage over picking a strategy at random** (see the cost-model
-  caveat in the next point, which affects those absolute numbers). Treat output as research, run
+  profitable after costs: on ~60 days of 5-minute data the strategies are roughly breakeven *before* costs
+  and slightly negative after realistic option costs. An earlier walk-forward check of the original ranker
+  (17 instruments, ~260 trades) found **no measurable advantage over picking a strategy at random**; that
+  check used an older, inflated cost model, and re-measuring the current ranker with `evaluate_ranker` is the
+  way to judge it. Treat output as research, run
   extended paper trading, and never size real money from it without your own validation.
-- **Cost model overcharges options trades.** Backtest costs (notably STT on the whole underlying value)
-  are applied as if trading the underlying, which can exceed a trade's risk and make every strategy look
-  like a loser net of costs. Real option costs are charged on the (much smaller) premium. Costs should be
-  modelled on premium before relying on net-of-cost numbers.
+- **Costs are modelled, not measured.** The backtest has no historical option prices, so premium is assumed
+  to be a fixed % of the underlying and to move by a fixed delta (`OPTION_PREMIUM_PCT`, `OPTION_DELTA`);
+  real premiums, spreads, theta and IV differ by instrument, strike and time to expiry. Statutory rates come
+  from published tables - verify them against your contract note. With these costs, a net-of-cost ranker may
+  say NO TRADE most of the time when no strategy shows an edge; that is intended.
 - **Researched on the underlying, traded in premium.** Edge is measured on index/stock price moves;
   execution is option premium, which also moves with theta, IV and bid-ask spread. The premium model is a
   delta approximation.

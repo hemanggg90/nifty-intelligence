@@ -39,22 +39,59 @@ class BacktestResult:
     metrics: dict = field(default_factory=dict)
 
 
-def _apply_costs(trade: TradeResult, entry_price: float, quantity: int) -> tuple[float, float, float, float]:
-    """Return (commissions, fees, slippage, net_pnl)."""
-    costs = SETTINGS.costs
-    commissions = costs.brokerage_per_order_inr * 2  # entry + exit
-    turnover = (entry_price + (trade.exit_price or entry_price)) * quantity
-    fees = turnover * costs.stt_rate
-    slippage_amount = costs.slippage_ticks * costs.tick_size * quantity * 2  # entry + exit
-    net_pnl = trade.gross_pnl * quantity - commissions - fees - slippage_amount
+MIN_PREMIUM = 0.05  # an option cannot trade below one tick
+
+
+def market_for(instrument: str | None) -> str:
+    """'NSE' or 'MCX' - decides which statutory option charges apply."""
+    from quant_intelligence.utils.market_profile import profile_for
+
+    return profile_for(instrument).name
+
+
+def _apply_costs(
+    trade: TradeResult, entry_price: float, quantity: int, market: str = "NSE"
+) -> tuple[float, float, float, float]:
+    """Return (commissions, fees, slippage, net_pnl) for trading this setup as an OPTION.
+
+    Strategies are researched on the underlying but traded as options, so the cost model follows
+    the option: brokerage per order, then STT (sell-side premium), exchange charge, SEBI fee and stamp
+    duty on PREMIUM turnover, plus GST - not on the underlying's notional value, which would
+    overcharge by an order of magnitude. Premium is estimated as a fixed % of the underlying price and
+    moves by `delta` per underlying point (see CostAssumptions). Treated as a bought option: bought at
+    entry, sold at exit. `net_pnl` is the option P&L (delta x underlying move x quantity) after costs.
+
+    commissions = brokerage; fees = STT + exchange + SEBI + stamp + GST; slippage in premium units.
+    """
+    c = SETTINGS.costs
+    delta = c.assumed_option_delta
+    entry_premium = max(c.assumed_option_premium_pct / 100.0 * entry_price, MIN_PREMIUM)
+    exit_premium = max(entry_premium + delta * trade.gross_pnl, MIN_PREMIUM)
+    buy_turnover = entry_premium * quantity
+    sell_turnover = exit_premium * quantity
+    turnover = buy_turnover + sell_turnover
+
+    stt_rate = c.opt_stt_sell_rate_mcx if market == "MCX" else c.opt_stt_sell_rate_nse
+    txn_rate = c.opt_txn_rate_mcx if market == "MCX" else c.opt_txn_rate_nse
+    brokerage = c.brokerage_per_order_inr * 2  # entry + exit
+    stt = sell_turnover * stt_rate
+    txn = turnover * txn_rate
+    sebi = turnover * c.sebi_rate
+    stamp = buy_turnover * c.stamp_buy_rate
+    gst = c.gst_rate * (brokerage + txn + sebi)
+
+    commissions = brokerage
+    fees = stt + txn + sebi + stamp + gst
+    slippage_amount = c.slippage_ticks * c.tick_size * quantity * 2  # entry + exit
+    net_pnl = delta * trade.gross_pnl * quantity - commissions - fees - slippage_amount
     return commissions, fees, slippage_amount, net_pnl
 
 
-def net_r_multiple(trade: TradeResult, quantity: int) -> float:
-    """Net-of-cost R: (gross P&L - brokerage - fees - slippage) / amount risked. This, not the
-    gross `TradeResult.r_multiple`, is what a strategy actually earns and what ranking must use."""
-    net_pnl = _apply_costs(trade, trade.setup.entry_price, quantity)[3]
-    risk = abs(trade.setup.entry_price - trade.setup.stop_price) * quantity
+def net_r_multiple(trade: TradeResult, quantity: int, market: str = "NSE") -> float:
+    """Net-of-cost R: option P&L after all costs / amount risked (delta x stop distance x quantity).
+    This, not the gross `TradeResult.r_multiple`, is what a strategy actually earns."""
+    net_pnl = _apply_costs(trade, trade.setup.entry_price, quantity, market)[3]
+    risk = SETTINGS.costs.assumed_option_delta * abs(trade.setup.entry_price - trade.setup.stop_price) * quantity
     return net_pnl / risk if risk > 0 else 0.0
 
 
@@ -97,21 +134,22 @@ def run_backtest(
         next_available_idx = exit_idx + 1
 
     run = BacktestResult(run_id=run_id, strategy_name=strategy.name, instrument=instrument, split=split, trades=trades)
-    run.metrics = _compute_run_metrics(trades, quantity)
+    market = market_for(instrument)
+    run.metrics = _compute_run_metrics(trades, quantity, market)
 
     if persist:
-        _persist_backtest(run, strategy, ohlcv, features, feat_by_ts, quantity)
+        _persist_backtest(run, strategy, ohlcv, features, feat_by_ts, quantity, market)
     return run
 
 
-def _compute_run_metrics(trades: list[TradeResult], quantity: int) -> dict:
+def _compute_run_metrics(trades: list[TradeResult], quantity: int, market: str = "NSE") -> dict:
     if not trades:
         return {"n_trades": 0, "status": "NO_TRADES"}
 
     r_multiples = np.array([t.r_multiple for t in trades])
     net_pnls = []
     for t in trades:
-        _, _, _, net_pnl = _apply_costs(t, t.setup.entry_price, quantity)
+        _, _, _, net_pnl = _apply_costs(t, t.setup.entry_price, quantity, market)
         net_pnls.append(net_pnl)
     net_pnls = np.array(net_pnls)
 
@@ -121,7 +159,7 @@ def _compute_run_metrics(trades: list[TradeResult], quantity: int) -> dict:
     avg_loss = r_multiples[~wins].mean() if (~wins).any() else 0.0
     payoff_ratio = float(abs(avg_win / avg_loss)) if avg_loss != 0 else float("nan")
 
-    net_rs = np.array([net_r_multiple(t, quantity) for t in trades])
+    net_rs = np.array([net_r_multiple(t, quantity, market) for t in trades])
     equity_curve = np.cumsum(net_pnls)
     running_max = np.maximum.accumulate(equity_curve) if len(equity_curve) else np.array([0])
     drawdown = equity_curve - running_max
@@ -155,7 +193,9 @@ def _compute_run_metrics(trades: list[TradeResult], quantity: int) -> dict:
     }
 
 
-def _persist_backtest(run: BacktestResult, strategy: BaseStrategy, ohlcv, features, feat_by_ts, quantity: int) -> None:
+def _persist_backtest(
+    run: BacktestResult, strategy: BaseStrategy, ohlcv, features, feat_by_ts, quantity: int, market: str = "NSE"
+) -> None:
     try:
         from quant_intelligence.database.db import get_session
         from quant_intelligence.database.models import BacktestRun, BacktestTrade, StrategyObservation
@@ -176,7 +216,7 @@ def _persist_backtest(run: BacktestResult, strategy: BaseStrategy, ohlcv, featur
             )
 
             for t in run.trades:
-                commissions, fees, slippage, net_pnl = _apply_costs(t, t.setup.entry_price, quantity)
+                commissions, fees, slippage, net_pnl = _apply_costs(t, t.setup.entry_price, quantity, market)
                 session.add(
                     BacktestTrade(
                         run_id=run.run_id,

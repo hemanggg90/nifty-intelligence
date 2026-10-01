@@ -58,10 +58,30 @@ class RiskLimits:
 
 @dataclass(frozen=True)
 class CostAssumptions:
+    # Brokerage: Dhan charges a flat Rs 20 per executed order for equity and commodity F&O
+    # (https://dhan.co/pricing/).
     brokerage_per_order_inr: float = _float_env("BROKERAGE_PER_ORDER_INR", 20.0)
-    stt_rate: float = _float_env("STT_RATE", 0.0005)
+    stt_rate: float = _float_env("STT_RATE", 0.0005)  # legacy; the option cost model below is used
     slippage_ticks: int = _int_env("SLIPPAGE_TICKS", 1)
     tick_size: float = _float_env("TICK_SIZE", 0.05)
+
+    # Statutory charges on OPTIONS premium. These are set by the exchanges/government and are the
+    # same at every broker; values from the published charges table at https://zerodha.com/charges/
+    # (Dhan's own pricing page lists only brokerage, GST and the SEBI fee). Verify against your
+    # contract note and override via environment variables if they differ.
+    opt_stt_sell_rate_nse: float = _float_env("OPT_STT_SELL_RATE_NSE", 0.0015)  # 0.15% of sell premium
+    opt_stt_sell_rate_mcx: float = _float_env("OPT_STT_SELL_RATE_MCX", 0.0005)  # 0.05% of sell premium
+    opt_txn_rate_nse: float = _float_env("OPT_TXN_RATE_NSE", 0.0003553)  # 0.03553% of premium turnover
+    opt_txn_rate_mcx: float = _float_env("OPT_TXN_RATE_MCX", 0.000418)  # 0.0418% of premium turnover
+    sebi_rate: float = _float_env("SEBI_RATE", 0.000001)  # Rs 10 per crore of turnover
+    stamp_buy_rate: float = _float_env("STAMP_BUY_RATE", 0.00003)  # 0.003% of buy-side premium
+    gst_rate: float = _float_env("GST_RATE", 0.18)  # on brokerage + exchange charges + SEBI fee
+
+    # The backtest only has the UNDERLYING's prices, so the option premium traded is an assumption:
+    # premium per unit ~= OPTION_PREMIUM_PCT % of the underlying price, and the option moves
+    # OPTION_DELTA points per underlying point. Costs and R are expressed on that basis.
+    assumed_option_premium_pct: float = _float_env("OPTION_PREMIUM_PCT", 1.5)
+    assumed_option_delta: float = _float_env("OPTION_DELTA", 0.5)
 
 
 @dataclass(frozen=True)

@@ -29,7 +29,9 @@ class Assessment:
     score: StrategyScore
 
 
-def observations_from_trades(trades, feat_by_ts: pd.DataFrame, strategy_name: str, quantity: int) -> pd.DataFrame:
+def observations_from_trades(
+    trades, feat_by_ts: pd.DataFrame, strategy_name: str, quantity: int, market: str = "NSE"
+) -> pd.DataFrame:
     """Flatten each trade's entry-time features + outcome into one row per historical
     observation (the analogue engine's input). `feat_by_ts` is features.set_index("timestamp").
     `r_multiple` is NET of costs - what the strategy actually earns - with the gross value kept
@@ -40,7 +42,7 @@ def observations_from_trades(trades, feat_by_ts: pd.DataFrame, strategy_name: st
             continue
         feat_row = feat_by_ts.loc[t.setup.timestamp]
         row = {c: feat_row.get(c) for c in COMPARISON_FEATURES}
-        row["r_multiple"] = net_r_multiple(t, quantity)
+        row["r_multiple"] = net_r_multiple(t, quantity, market)
         row["gross_r_multiple"] = t.r_multiple
         row["outcome"] = t.outcome
         row["entry_timestamp"] = t.setup.timestamp
@@ -87,7 +89,8 @@ def assess_strategy(
     quantity: int,
     metrics: dict | None = None,
     top_k: int = 30,
+    market: str = "NSE",
 ) -> Assessment:
-    observations = observations_from_trades(trades, feat_by_ts, strategy_name, quantity)
-    metrics = metrics if metrics is not None else _compute_run_metrics(list(trades), quantity)
+    observations = observations_from_trades(trades, feat_by_ts, strategy_name, quantity, market)
+    metrics = metrics if metrics is not None else _compute_run_metrics(list(trades), quantity, market)
     return assess_observations(strategy_name, observations, current_features, metrics, top_k=top_k)
