@@ -591,6 +591,19 @@ temporary database and log directory and never write to your real ones, nor star
   (see the evaluator numbers below). Live trading is still manual (double gate, confirmation checkbox, risk engine
   unchanged); the Live page shows a red TIE-BREAK banner. Turn it off with `TIE_BREAK_LIVE=false` /
   `TIE_BREAK_PAPER=false` (data not OK, nothing eligible or an ineligible leader stay NO TRADE regardless).
+  Measured with `python -m quant_intelligence.ranking.evaluate_ranker NIFTY BANKNIFTY --max-points 400 [--tie-break]`
+  (~60 days of 5-minute data, 2 Oct 2026):
+
+  | | Trades | Mean net R / trade | Win rate | Random-pick mean | Take-every-signal |
+  |---|---|---|---|---|---|
+  | Tie-break off | 23 | -0.32 | 26% | -0.26 | -0.14 |
+  | Tie-break on | 43 | -0.22 | 30% | -0.22 | -0.14 |
+
+  Tie-break nearly doubles the trades but the lift over a random pick is ~0 (95% interval -0.005 to +0.004) and
+  the mean net R's 95% interval (-0.55 to +0.14) includes a loss: more trades, not better ones, and each pays
+  real costs. The samples are small, so do not read anything into the NIFTY/BANKNIFTY difference. Re-run the
+  command above on your own data before relying on it, and keep `TIE_BREAK_LIVE` off until paper trading of the
+  tagged trades shows they are not losing.
 - **Paper != live.** Paper fills use simple slippage on the last price; real fills depend on liquidity and
   spread. Sold-option margin is not modelled. Only holidays listed in `market_holidays.txt` (plus the fixed-date ones) are modelled.
 - **Live trading is unproven** against a funded account.
