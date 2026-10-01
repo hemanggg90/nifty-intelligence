@@ -9,6 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from quant_intelligence.brokers.dhan_rate_limit import LIMITER
+from quant_intelligence.config.credentials import token_status
 from quant_intelligence.config.settings import SETTINGS
 from quant_intelligence.execution.engine import COMMODITY_RUNNER, ENGINE
 from quant_intelligence.ui import format as F
@@ -66,6 +67,11 @@ def dhan_chip() -> str:
     snap = LIMITER.snapshot()
     if not (SETTINGS.dhan_client_id and SETTINGS.dhan_access_token):
         return chip("Dhan: not configured", "muted")
+    ts = token_status(SETTINGS.dhan_access_token)
+    if ts["state"] == "expired":
+        return chip(f"Dhan: token expired {ts['expires_at']:%d %b %H:%M} - update it", "critical")
+    if ts["state"] == "expiring":
+        return chip(f"Dhan: token expires in {F.duration(ts['delta'])}", "warning")
     if snap["auth_block_remaining"] > 0:
         return chip("Dhan: token rejected - update it", "critical")
     if snap["cooldown_remaining"] > 0:

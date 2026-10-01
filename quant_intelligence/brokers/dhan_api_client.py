@@ -20,6 +20,7 @@ import time
 import requests
 
 from quant_intelligence.brokers.dhan_rate_limit import LIMITER
+from quant_intelligence.config.credentials import token_status
 from quant_intelligence.config.settings import SETTINGS
 
 # Expiry dates change at most daily, so cache them and halve the option-chain request rate.
@@ -85,6 +86,13 @@ class DhanApiClient:
         self._require_configured()
         limits = SETTINGS.dhan
         attempts = limits.max_attempts if retry else 1
+        status = token_status(self.access_token)
+        if status["state"] == "expired":
+            raise DhanApiError(
+                f"Your Dhan access token expired on {status['expires_at']:%d %b %H:%M} IST (tokens last about 24 hours). "
+                "Generate a new one in your Dhan account and enter it under API Keys.",
+                status_code=401,
+            )
         for attempt in range(1, attempts + 1):
             blocked = LIMITER.auth_block_remaining(self.access_token)
             if blocked > 0:
