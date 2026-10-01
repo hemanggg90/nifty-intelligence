@@ -52,6 +52,7 @@ class RateLimiter:
             self._cooldown_until = 0.0
             self._auth_failed_token = None
             self._auth_failed_until = 0.0
+            self._last_ok_wall = None
 
     def min_interval(self, category: str) -> float:
         return {
@@ -114,6 +115,7 @@ class RateLimiter:
         if category == "orders":
             return
         with self._state_lock:
+            self._last_ok_wall = time.time()
             self._consecutive_429 = 0
             if self.clock() >= self._cooldown_until:
                 self._breaker_opens = 0
@@ -156,6 +158,7 @@ class RateLimiter:
                 "total_429": self._total_429,
                 "cooldown_remaining": max(0.0, self._cooldown_until - now),
                 "auth_block_remaining": max(0.0, self._auth_failed_until - now),
+                "last_ok_age_sec": None if self._last_ok_wall is None else time.time() - self._last_ok_wall,
                 "window_sec": window,
             }
 

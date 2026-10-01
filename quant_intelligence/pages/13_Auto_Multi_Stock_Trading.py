@@ -11,15 +11,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import streamlit as st
 
+from quant_intelligence.ui.components import page_header
 from quant_intelligence.ui.multi_instrument_panel import render_multi_instrument_panel
 from quant_intelligence.ui.state import init_session_state
 from quant_intelligence.ui.theme import apply_theme
 
 apply_theme()
 init_session_state()
-st.title("Auto Multi-Instrument Trading")
-st.caption(
-    "ONE UNIVERSE: NIFTY/BANKNIFTY + the fixed stock watchlist, ALL traded as options -> "
-    "PER-INSTRUMENT PIPELINE -> RANKING -> RISK ENGINE -> PAPER BROKER (simulated)."
+page_header(
+    "Auto Multi-Instrument Trading",
+    "NIFTY, BANKNIFTY and the stock watchlist - every trade is an option. Pipeline → ranking → risk engine → paper broker.",
 )
 render_multi_instrument_panel()

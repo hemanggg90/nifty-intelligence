@@ -68,3 +68,33 @@ def expected_last_closed_bar_start(now: dt.datetime, profile: MarketProfile = NS
         # The day's first bar has not closed yet: the last closed bar belongs to the previous session.
         return expected_last_closed_bar_start(open_dt - dt.timedelta(minutes=1), profile, tf_minutes)
     return open_dt + dt.timedelta(minutes=last_index * tf_minutes)
+
+
+def session_status(now: dt.datetime, profile: MarketProfile = NSE) -> dict:
+    """Is the session open at `now` (naive IST), and how long until that changes?
+
+    Returns {"open": bool, "change_in": timedelta, "label": "closes in 2h 14m" | "opens in 17h 5m"}.
+    Weekends are closed; exchange holidays are not modelled.
+    """
+    now = now.replace(tzinfo=None)
+    today_open = dt.datetime.combine(now.date(), profile.open)
+    today_close = dt.datetime.combine(now.date(), profile.close)
+    if now.weekday() < 5 and today_open <= now < today_close:
+        delta = today_close - now
+        return {"open": True, "change_in": delta, "label": "closes in " + _short(delta)}
+    for offset in range(0, 8):
+        day = now.date() + dt.timedelta(days=offset)
+        candidate = dt.datetime.combine(day, profile.open)
+        if day.weekday() < 5 and candidate > now:
+            delta = candidate - now
+            return {"open": False, "change_in": delta, "label": "opens in " + _short(delta)}
+    return {"open": False, "change_in": dt.timedelta(0), "label": "closed"}
+
+
+def _short(delta: dt.timedelta) -> str:
+    minutes = int(delta.total_seconds() // 60)
+    days, rem = divmod(minutes, 1440)
+    hours, mins = divmod(rem, 60)
+    if days:
+        return f"{days}d {hours}h"
+    return f"{hours}h {mins:02d}m" if hours else f"{mins}m"

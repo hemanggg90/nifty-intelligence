@@ -132,16 +132,25 @@ Run the app and use the sidebar page list. The main page (`app.py`) is the comma
 | 04 Backtest Lab | Event-driven backtests with in-sample / out-of-sample split and walk-forward folds; editable parameters. |
 | 05 Regime Analysis | Regime probabilities and classifier confidence over time. |
 | 06 Historical Analogues | The exact past setups used to score each strategy today. |
-| **07 Paper Trading** | Single-instrument manual/auto flow, **or** "All instruments together" mode. Shows amount needed, risk at stop and available funds before you submit. |
-| 08 Positions & Orders | Full audit trail of orders, fills and positions with live net P&L and CSV export. |
+| **07 Paper Trading** | A trading terminal for one instrument: quote header (last price, day change, range), candlestick chart with VWAP/EMA overlays and the setup's entry/stop/target lines, **option-chain ladder** (calls | strike | puts, OI, change in OI, IV, ATM highlighted) with an open-interest chart, PCR, max pain and support/resistance, the **strategy leaderboard**, a decision card (regime, selected strategy, setup status) and an **order ticket** showing premium, quantity, amount needed, max loss/profit **after charges**, risk:reward and a funds meter before you submit. "All instruments" scope hands over to the background scanner. |
+| **08 Positions & Orders** | A broker-style view of the paper account. Live KPIs (day P&L net of charges, capital used/available, win rate); tabs for **open positions** (cards with live P&L, stop-to-target progress bar, charges and a manual **Exit** / **Exit all** with confirmation), today's trades, filterable trade history, order book, fills (with slippage cost) and **analytics** (equity curve, profit factor, expectancy, payoff, drawdown, streaks, charges breakdown, P&L by strategy/instrument). CSV downloads on every table. |
 | 09 Risk Control | Account state, configured limits, the **emergency kill switch**, recent risk events. |
 | 10 Research Reports | Structured reports generated only from stored system data. |
 | 11 System Logs & Health | Dhan connectivity/credentials status and system logs. |
 | **12 Live Options Trading** | Real orders via Dhan - disabled unless fully authorised (see Safety model). |
-| **13 Auto Multi-Instrument Trading** | Background auto-trader over NIFTY, BANKNIFTY and the 15-stock watchlist. |
-| **14 Commodity Auto Trading (MCX)** | A second, independent background auto-trader for MCX commodities with its own session hours. |
+| **13 Auto Multi-Instrument Trading** | Background auto-trader over NIFTY, BANKNIFTY and the 15-stock watchlist: control bar, live account/market tiles, a **market watch** (last price, change %, day-range bar, sparkline and the last scan result per instrument), and tabs for positions, scan results, an activity feed (orders, risk vetoes, exits) and today's performance. |
+| **14 Commodity Auto Trading (MCX)** | The same layout for a second, independent background auto-trader for MCX commodities with its own session hours and square-off countdown. |
 
 A sidebar indicator on every page shows when auto-trading is running and offers a Stop button.
+
+**Look and feel.** Every trading page starts with a status bar (IST clock, NSE and MCX session open/closed with a
+countdown, Dhan connection state, whether each auto-trader is running, PAPER/LIVE mode, kill switch). Numbers use
+Indian grouping (lakh/crore) and rupee signs; P&L is always colour **and** triangle **and** sign, never colour alone.
+Charts follow a validated colour palette (blue/orange/aqua for series; green/red reserved for good/bad), one axis per
+chart, hairline grids and trading-hour gaps removed from intraday candles. The theme lives in `.streamlit/config.toml`
+and `ui/theme.py`. Quotes in watchlists come from the on-disk candle cache, so they cost no Dhan requests.
+Charges shown are estimates at Dhan's brokerage and the statutory option rates (display only - the paper broker books
+gross premium P&L).
 
 ## The strategy library
 
@@ -449,7 +458,10 @@ quant_intelligence/
                  dhan_rate_limit (account-wide limiter, 429 breaker) | dhan_cache (shared price/chain caches)
   database/      db.py | models.py
   reports/       report_generator.py
-  ui/            state | theme | credentials_panel | multi_instrument_panel | live_positions
+  ui/            state | theme | components (status bar, KPI tiles, position cards) | charts (Plotly) | tables
+                 format (Indian numbers) | position_views, chain_views (pure analytics: P&L, stats, ladder, ticket)
+                 open_positions (shared live positions block) | actions (manual exit) | market_data (cached quotes)
+                 multi_instrument_panel | credentials_panel
   utils/         timeutil (IST) | market_profile (NSE/MCX) | market_calendar | logging_utils
   tests/         pytest suite
 scripts/         init_db.py | smoke_test.py | ui_smoke_test.py
