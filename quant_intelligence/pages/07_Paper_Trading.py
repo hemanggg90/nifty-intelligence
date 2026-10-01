@@ -30,6 +30,7 @@ from quant_intelligence.options.option_selector import (
     select_contract,
 )
 from quant_intelligence.options.premium_model import PremiumSizingError, translate_setup
+from quant_intelligence.ranking.ranking_engine import TIE_BREAK_TAG, tradable
 from quant_intelligence.risk.risk_engine import ProposedTrade, evaluate_trade
 from quant_intelligence.strategies.registry import CHAIN_AWARE_STRATEGY_NAMES, get_strategy
 from quant_intelligence.ui import format as F
@@ -122,7 +123,8 @@ if chain is not None and chain.underlying != underlying:
     chain = None  # the stored chain belongs to another instrument
 
 ranking = output.ranking
-strategy_name = None if ranking.is_no_trade else ranking.selected_strategy
+ok_paper, why_not = tradable(ranking, "PAPER")
+strategy_name = ranking.selected_strategy if ok_paper else None
 setup_status = None
 setup = None
 needs_chain_msg = False
@@ -231,7 +233,7 @@ with side:
         )
         if strategy_name is None:
             st.markdown('<div class="qi-decision-title">NO TRADE</div>', unsafe_allow_html=True)
-            st.caption(ranking.reason)
+            st.caption(why_not or ranking.reason)
         else:
             if setup is not None:
                 status_chip = chip("Setup triggered", "good")
@@ -239,8 +241,16 @@ with side:
                 status_chip = chip("Waiting for setup", "warning")
             else:
                 status_chip = chip("Needs option chain", "warning")
+            if ranking.tie_break:
+                status_chip += " " + chip("TIE-BREAK", "warning")
             st.markdown(f'<div class="qi-decision-title">{strategy_name}</div>{status_chip}', unsafe_allow_html=True)
             st.caption(ranking.reason)
+            if ranking.tie_break:
+                st.warning(
+                    f"No strategy is clearly best (runner-up: {ranking.tie_runner_up}). This trade is tagged TIE-BREAK and the "
+                    f"auto-trader sizes it at x{SETTINGS.tie_break_size_factor:g} - consider a smaller lot here too. "
+                    "Tie-break picks have no statistically proven edge."
+                )
             if needs_chain_msg:
                 st.info(f"{strategy_name} needs a live option chain - load one in the Option chain tab.")
             elif setup_status is not None and setup_status.status == WAITING_FOR_SETUP:
@@ -322,7 +332,7 @@ with side:
                                 exchange_segment=option_segment_for(underlying),
                                 product_type=SETTINGS.option_product_type, transaction_type=contract.transaction,
                                 option_type=contract.option_type, strike=contract.strike, expiry=contract.expiry,
-                                lot_size=contract.lot_size,
+                                lot_size=contract.lot_size, tag=TIE_BREAK_TAG if ranking.tie_break else None,
                             )
                             ack = broker.place_order(order, market_price=premium_setup.entry_price)
                             ENGINE.add_trade()

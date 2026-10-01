@@ -18,6 +18,7 @@ from quant_intelligence.options.option_selector import (
     select_contract,
 )
 from quant_intelligence.options.premium_model import PremiumSizingError, translate_setup
+from quant_intelligence.ranking.ranking_engine import TIE_BREAK_TAG, tradable
 from quant_intelligence.risk.risk_engine import ProposedTrade, evaluate_trade
 from quant_intelligence.strategies.registry import CHAIN_AWARE_STRATEGY_NAMES, get_strategy
 from quant_intelligence.ui.credentials_panel import render_credentials_panel
@@ -80,12 +81,20 @@ if chain is not None and chain.underlying == underlying:
 
 st.divider()
 
-if output.ranking.is_no_trade:
-    st.warning(f"NO TRADE: {output.ranking.reason}")
+ok_live, why_not = tradable(output.ranking, "LIVE")
+if not ok_live:
+    st.warning(f"NO TRADE: {why_not}")
     st.stop()
 
 strategy_name = output.ranking.selected_strategy
 st.success(f"Selected strategy: {strategy_name}")
+if output.ranking.tie_break:
+    st.error(
+        f"TIE-BREAK SELECTION - REAL MONEY. {output.ranking.reason} Tie-break picks are the ones with NO statistically "
+        f"proven edge (in research they average slightly negative after costs). The order will be tagged TIE-BREAK; "
+        f"consider a smaller lot than usual (the paper auto-trader uses x{SETTINGS.tie_break_size_factor:g}). "
+        "Nothing is sent without your confirmation, the risk engine and the live double gate."
+    )
 strategy = get_strategy(strategy_name)
 recent_ohlcv = output.ohlcv.tail(5)
 is_chain_strategy = strategy_name in CHAIN_AWARE_STRATEGY_NAMES
@@ -184,6 +193,7 @@ if st.button("Submit to Risk Engine -> DhanBroker (LIVE)", type="primary", disab
             strike=contract.strike,
             expiry=contract.expiry,
             lot_size=contract.lot_size,
+            tag=TIE_BREAK_TAG if output.ranking.tie_break else None,
         )
         ack = broker.place_order(order)
         ENGINE.add_trade()

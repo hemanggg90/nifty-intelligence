@@ -11,6 +11,7 @@ import streamlit as st
 from quant_intelligence.brokers.dhan_rate_limit import LIMITER
 from quant_intelligence.config.credentials import token_status
 from quant_intelligence.config.settings import SETTINGS
+from quant_intelligence.data.data_keeper import DATA_KEEPER
 from quant_intelligence.execution.engine import COMMODITY_RUNNER, ENGINE
 from quant_intelligence.ui import format as F
 from quant_intelligence.utils.market_calendar import session_status
@@ -82,6 +83,19 @@ def dhan_chip() -> str:
     return chip(f"Dhan: connected · {F.duration(dt.timedelta(seconds=age))} ago", "good")
 
 
+def data_chip() -> str:
+    """State of the background data keeper: are the watchlist candles current?"""
+    if not SETTINGS.data_keeper_enabled:
+        return chip("Data feed: refresh on demand", "muted")
+    ds = DATA_KEEPER.status()
+    if not ds["running"] or ds["rounds"] == 0:
+        return chip("Data feed: starting", "info")
+    if ds["not_ok"]:
+        return chip(f"Data feed: {len(ds['not_ok'])} of {ds['tracked']} stale", "warning")
+    newest = ds["newest_bar"]
+    return chip(f"Data feed: current{f' \u00b7 newest bar {newest:%d %b %H:%M}' if newest is not None else ''}", "good")
+
+
 def _runner_chip(label: str, runner) -> str:
     s = runner.status()
     if s["running"]:
@@ -97,6 +111,7 @@ def status_bar_html() -> str:
         _session_chip("MCX", MCX),
         '<span class="qi-sep"></span>',
         dhan_chip(),
+        data_chip(),
         '<span class="qi-sep"></span>',
         _runner_chip("NSE", ENGINE),
         _runner_chip("MCX", COMMODITY_RUNNER),
@@ -164,6 +179,7 @@ def position_card(row: pd.Series, key: str, on_exit=None) -> None:
         f'<div class="qi-pos-head"><span class="qi-sym">{html.escape(str(row["contract"]))}</span>'
         f'{chip(row["side"], side_tone, icon="")}{chip(row["market"], "muted", icon="")}'
         f'{chip(row["strategy"] or "-", "muted", icon="")}'
+        f'{chip(row["tag"], "warning", icon="") if row.get("tag") else ""}'
         f'<span class="qi-pos-pnl">{pnl_html(pnl, pct)}</span></div>'
     )
     grid = (

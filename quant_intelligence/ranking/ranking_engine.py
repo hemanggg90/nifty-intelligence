@@ -141,9 +141,38 @@ class RankingDecision:
     selected_strategy: str | None
     is_no_trade: bool
     reason: str
+    tie_break: bool = False  # selected only because the top strategies were tied (see rank_and_select)
+    tie_runner_up: str | None = None
 
 
-def rank_and_select(scores: list[StrategyScore], data_quality_status: str = "OK") -> RankingDecision:
+TIE_BREAK_TAG = "TIE-BREAK"
+
+
+def tradable(decision: "RankingDecision", mode: str = "PAPER") -> tuple[bool, str | None]:
+    """Can this decision be traded in `mode` ("PAPER" or "LIVE")? Returns (ok, why_not).
+
+    A NO TRADE decision never is. A tie-break decision is honoured only if TIE_BREAK_PAPER / TIE_BREAK_LIVE
+    allows it for that mode (both default on)."""
+    if decision.is_no_trade:
+        return False, decision.reason
+    if decision.tie_break:
+        from quant_intelligence.config.settings import SETTINGS
+
+        enabled = SETTINGS.tie_break_live if mode.upper() == "LIVE" else SETTINGS.tie_break_paper
+        if not enabled:
+            return False, f"Tie-break trading is turned off for {mode.lower()} trading. {decision.reason}"
+    return True, None
+
+
+def rank_and_select(
+    scores: list[StrategyScore], data_quality_status: str = "OK", allow_tie_break: bool = False
+) -> RankingDecision:
+    """Pick the strategy to trade now, or NO TRADE.
+
+    `allow_tie_break`: when the top two eligible strategies cannot be told apart statistically, select the
+    top one anyway and flag it (`tie_break=True`) so callers tag the trade and size it down - instead of
+    returning NO TRADE. Data quality not OK, no eligible strategy, or an ineligible leader still mean NO TRADE.
+    """
     ranked = sorted(scores, key=lambda s: s.score, reverse=True)
 
     if data_quality_status != "OK":
@@ -155,15 +184,23 @@ def rank_and_select(scores: list[StrategyScore], data_quality_status: str = "OK"
         return RankingDecision(ranked, None, True, "No strategy clears minimum edge/confidence thresholds")
 
     top = eligible[0]
+
+    def tied(runner_up: StrategyScore, detail: str) -> RankingDecision:
+        if allow_tie_break:
+            return RankingDecision(
+                ranked, top.strategy_name, False,
+                f"TIE-BREAK: {top.strategy_name} chosen over {runner_up.strategy_name} ({detail}). No strategy is "
+                "clearly best, so this trade is tagged and sized down.",
+                tie_break=True, tie_runner_up=runner_up.strategy_name,
+            )
+        return RankingDecision(ranked, None, True, f"Top strategies ({top.strategy_name} vs {runner_up.strategy_name}) are {detail}")
+
     if len(eligible) > 1:
         gap = top.score - eligible[1].score
         if gap < MIN_SCORE_GAP_FOR_SIGNIFICANCE:
-            return RankingDecision(
-                ranked,
-                None,
-                True,
-                f"Top strategies ({top.strategy_name} vs {eligible[1].strategy_name}) are statistically/"
-                f"practically indistinguishable (score gap {gap:.3f} < {MIN_SCORE_GAP_FOR_SIGNIFICANCE})",
+            return tied(
+                eligible[1],
+                f"statistically/practically indistinguishable (score gap {gap:.3f} < {MIN_SCORE_GAP_FOR_SIGNIFICANCE})",
             )
 
     if len(eligible) > 1:
@@ -172,12 +209,9 @@ def rank_and_select(scores: list[StrategyScore], data_quality_status: str = "OK"
             se = float(np.hypot(top.edge_stderr, runner_up.edge_stderr))
             z = (top.edge_mean - runner_up.edge_mean) / se if se > 0 else float("inf")
             if z < TIE_Z:
-                return RankingDecision(
-                    ranked,
-                    None,
-                    True,
-                    f"Top strategies ({top.strategy_name} vs {runner_up.strategy_name}) are not statistically "
-                    f"distinguishable (edge difference {z:.2f} standard errors < {TIE_Z})",
+                return tied(
+                    runner_up,
+                    f"not statistically distinguishable (edge difference {z:.2f} standard errors < {TIE_Z})",
                 )
 
     return RankingDecision(ranked, top.strategy_name, False, f"{top.strategy_name} has the strongest validated conditional edge")

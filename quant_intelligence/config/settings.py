@@ -17,7 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
 DATA_CACHE_DIR = PROJECT_ROOT / "data_cache"
-LOGS_DIR = PROJECT_ROOT / "logs"
+LOGS_DIR = Path(os.environ["LOGS_DIR"]) if os.environ.get("LOGS_DIR") else PROJECT_ROOT / "logs"  # tests point this at a temp dir
 DATA_CACHE_DIR.mkdir(exist_ok=True)
 LOGS_DIR.mkdir(exist_ok=True)
 
@@ -138,6 +138,25 @@ class Settings:
     default_timeframe: str = os.getenv("DEFAULT_TIMEFRAME", "5min")
 
     paper_starting_capital: float = _float_env("PAPER_STARTING_CAPITAL", 1_000_000.0)
+
+    # Tie-break: when the best two strategies are statistically tied but the top one is eligible, trade it
+    # anyway - tagged "TIE-BREAK" and sized down - instead of standing aside. Live trading stays manual
+    # (confirmation + risk engine + double gate); this only decides whether the tied pick is offered.
+    tie_break_paper: bool = _bool_env("TIE_BREAK_PAPER", True)
+    tie_break_live: bool = _bool_env("TIE_BREAK_LIVE", True)
+    tie_break_size_factor: float = _float_env("TIE_BREAK_SIZE_FACTOR", 0.5)
+
+    # Background data keeper: refreshes every watchlist instrument's candles on its own (data/data_keeper.py).
+    data_keeper_enabled: bool = _bool_env("DATA_KEEPER", True)
+    data_keeper_interval_sec: int = _int_env("DATA_KEEPER_INTERVAL_SEC", 60)
+
+    # Token keeper (brokers/dhan_auth.py): renews the 24h Dhan token before it expires. Renewing needs nothing
+    # extra; DHAN_PIN + DHAN_TOTP_SECRET (treat like passwords: Secrets/.env only, never git) let it also
+    # generate a brand-new token when the old one has already expired.
+    token_keeper_enabled: bool = _bool_env("TOKEN_KEEPER", True)
+    token_renew_before_hours: float = _float_env("TOKEN_RENEW_BEFORE_HOURS", 8.0)
+    dhan_pin: str = os.getenv("DHAN_PIN", "").strip()
+    dhan_totp_secret: str = os.getenv("DHAN_TOTP_SECRET", "").strip()
 
     # Automation
     auto_trade_refresh_seconds: int = _int_env("AUTO_TRADE_REFRESH_SECONDS", 60)

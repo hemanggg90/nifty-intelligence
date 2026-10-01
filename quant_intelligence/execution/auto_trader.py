@@ -34,6 +34,7 @@ from quant_intelligence.options.option_selector import (
 from quant_intelligence.options.premium_model import PremiumSizingError, translate_setup
 from quant_intelligence.research.pipeline import PipelineOutput
 from quant_intelligence.execution.capital import capital_required, capital_summary
+from quant_intelligence.ranking.ranking_engine import TIE_BREAK_TAG, tradable
 from quant_intelligence.risk.risk_engine import AccountState, ProposedTrade, evaluate_trade
 from quant_intelligence.strategies.registry import CHAIN_AWARE_STRATEGY_NAMES, get_strategy
 
@@ -48,9 +49,12 @@ class AutoCycleResult:
     reason: str = ""
     capital_required: float | None = None  # premium x quantity to BUY the resolved contract
     capital_used: float = 0.0  # capital actually committed by a filled BUY order
+    tag: str | None = None  # "TIE-BREAK" when the trade came from a tied ranking
 
 
-def size_position(account: AccountState, entry_price: float, stop_price: float, lot_size: int = 1) -> int:
+def size_position(
+    account: AccountState, entry_price: float, stop_price: float, lot_size: int = 1, size_factor: float = 1.0
+) -> int:
     """Quantity such that the risk-engine's per-trade risk check passes by construction.
 
     Uses 90% of `max_risk_per_trade_pct` as headroom against rounding, since
@@ -68,6 +72,8 @@ def size_position(account: AccountState, entry_price: float, stop_price: float, 
     if cap_pct > 0 and entry_price > 0:
         capital_budget = account.equity * cap_pct / 100.0
         lots = min(lots, int(capital_budget // (entry_price * lot_size)))
+    if size_factor < 1.0 and lots > 0:
+        lots = max(1, int(lots * size_factor))  # a tie-break trade is sized down, but never to zero lots
     return lots * lot_size
 
 
@@ -78,7 +84,7 @@ def chain_needed(output: PipelineOutput, underlying: str, broker: PaperBroker) -
     underlying, and either it is a chain-aware strategy or its entry setup has triggered on the latest
     bar. Lets callers fetch the (rate-limited) chain only when it will actually be used, and outside any
     lock - mirroring the early exits of `run_auto_option_cycle`."""
-    if output.ranking.is_no_trade:
+    if not tradable(output.ranking, "PAPER")[0]:
         return False
     if any(pos["instrument"] == underlying for pos in broker.get_open_positions()):
         return False
@@ -115,13 +121,18 @@ def run_auto_option_cycle(
             chain_holder["chain"] = value
         return value
 
-    if output.ranking.is_no_trade:
-        result.reason = f"NO TRADE: {output.ranking.reason}"
+    ok, why_not = tradable(output.ranking, "PAPER")
+    if not ok:
+        result.reason = f"NO TRADE: {why_not}"
         return result
 
     if any(pos["instrument"] == underlying for pos in broker.get_open_positions()):
         result.reason = f"Skipped: already have an open position on {underlying}."
         return result
+
+    tie_break = output.ranking.tie_break
+    result.tag = TIE_BREAK_TAG if tie_break else None
+    size_factor = SETTINGS.tie_break_size_factor if tie_break else 1.0
 
     strategy_name = output.ranking.selected_strategy
     result.strategy_name = strategy_name
@@ -169,7 +180,7 @@ def run_auto_option_cycle(
         result.reason = f"Could not resolve a tradeable option: {e}"
         return result
 
-    quantity = size_position(account, premium_setup.entry_price, premium_setup.stop_price, contract.lot_size)
+    quantity = size_position(account, premium_setup.entry_price, premium_setup.stop_price, contract.lot_size, size_factor)
     if quantity <= 0:
         result.reason = "Position sizing produced zero quantity (equity too small, stop too wide, or one lot exceeds the per-trade capital cap)."
         return result
@@ -219,9 +230,10 @@ def run_auto_option_cycle(
         strike=contract.strike,
         expiry=contract.expiry,
         lot_size=contract.lot_size,
+        tag=result.tag,
     )
     result.order = broker.place_order(order, market_price=premium_setup.entry_price)
-    result.reason = f"Order {result.order.status}"
+    result.reason = f"Order {result.order.status}" + (f" ({TIE_BREAK_TAG}, size x{size_factor:g})" if tie_break else "")
     if result.order.status == "FILLED" and transaction == "BUY":
         result.capital_used = result.capital_required
     return result

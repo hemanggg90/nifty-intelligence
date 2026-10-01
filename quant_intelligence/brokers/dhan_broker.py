@@ -61,7 +61,8 @@ class DhanBroker(BaseBroker):
             "securityId": order.security_id,
             "quantity": order.quantity,
             "price": order.price or 0,
-            "correlationId": (order.decision_id or "")[:30],
+            # A tag (e.g. TIE-BREAK) travels to Dhan's own order book through correlationId.
+            "correlationId": (f"TB-{order.decision_id or ''}" if order.tag else (order.decision_id or ""))[:30],
         }
 
         try:
@@ -75,7 +76,7 @@ class DhanBroker(BaseBroker):
         log_event(
             "dhan_broker",
             f"LIVE order placed: {transaction_type} {order.quantity} {order.instrument} "
-            f"(security_id={order.security_id}) -> {status}",
+            f"(security_id={order.security_id}) -> {status}" + (f" [{order.tag}]" if order.tag else ""),
             level="INFO",
             order_id=order_id,
             decision_id=order.decision_id,

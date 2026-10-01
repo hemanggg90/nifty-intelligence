@@ -1,0 +1,8 @@
+# Variable exchange holidays (they move every year; the exchanges publish the list annually).
+# One per line:  YYYY-MM-DD [NSE|MCX] name        (no market = both)
+# Fixed-date holidays (26 Jan, 1 May NSE, 15 Aug, 2 Oct, 25 Dec) are already built in.
+# A day missing here is treated as a normal trading day - the system never guesses lunar dates.
+#
+# Examples (check against the official NSE/MCX holiday circular before relying on them):
+# 2027-03-22 NSE Holi
+# 2027-11-05 Diwali Laxmi Pujan

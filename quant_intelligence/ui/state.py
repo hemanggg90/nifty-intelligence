@@ -7,6 +7,8 @@ recomputing the whole research pipeline on every rerun.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import time
 from quant_intelligence.utils.timeutil import now_ist
 
 import streamlit as st
@@ -14,8 +16,61 @@ import streamlit as st
 from quant_intelligence.brokers.dhan_api_client import DhanApiClient
 from quant_intelligence.brokers.dhan_rate_limit import LIMITER
 from quant_intelligence.config.settings import SETTINGS
+from quant_intelligence.data.data_keeper import DATA_KEEPER
 from quant_intelligence.execution.engine import COMMODITY_RUNNER, ENGINE
 from quant_intelligence.risk.risk_engine import AccountState
+
+# A not-OK pipeline result is recomputed after this long (the data feed may have recovered meanwhile).
+_NOT_OK_RETRY_SEC = 60.0
+# A new closed bar triggers a recompute, but never more often than this (a pipeline run is expensive).
+_MIN_RERUN_SEC = 60.0
+
+
+def credentials_fingerprint() -> str:
+    """Changes whenever the Client ID or access token changes (never exposes either)."""
+    raw = f"{SETTINGS.dhan_client_id}|{SETTINGS.dhan_access_token}".encode()
+    return hashlib.sha256(raw).hexdigest()[:12]
+
+
+def pipeline_needs_refresh(output, ran_at: float | None, token_fp: str | None, instrument: str, timeframe: str,
+                           now: float | None = None, now_dt: dt.datetime | None = None) -> str | None:
+    """Why a cached pipeline result should be recomputed, or None if it is still good.
+
+    A browser session used to keep its first pipeline answer forever, so a "data quality degraded" result
+    stayed on screen after the token was fixed or the feed recovered. Recompute when the credentials changed,
+    when the last result was not OK and a minute has passed, or when a newer bar should exist by now.
+    """
+    from quant_intelligence.data.data_manager import _parse_timeframe_minutes
+    from quant_intelligence.utils.market_calendar import expected_last_closed_bar_start
+    from quant_intelligence.utils.market_profile import profile_for
+
+    now = time.monotonic() if now is None else now
+    age = None if ran_at is None else now - ran_at
+    if token_fp != credentials_fingerprint():
+        return "credentials changed"
+    if age is not None and age < _MIN_RERUN_SEC and output.data_quality_status == "OK":
+        return None
+    if output.data_quality_status != "OK" and (age is None or age >= _NOT_OK_RETRY_SEC):
+        return f"last result was {output.data_quality_status}"
+    if age is not None and age >= _MIN_RERUN_SEC:
+        expected = expected_last_closed_bar_start(now_dt or now_ist(), profile_for(instrument), _parse_timeframe_minutes(timeframe))
+        if expected > output.timestamp.replace(tzinfo=None):
+            return "a newer bar has closed"
+    return None
+
+
+def invalidate_cached_analysis() -> None:
+    """Forget every cached analysis so the next page run recomputes it from fresh data (call after the
+    credentials change, so a DEGRADED answer computed with the old token does not linger)."""
+    for key in ("pipeline_output", "pipeline_error", "option_chain", "pipeline_for", "pipeline_ran_at", "pipeline_token_fp"):
+        st.session_state[key] = None
+    ENGINE.last_rows = []
+    COMMODITY_RUNNER.last_rows = []
+    from quant_intelligence.data import data_manager as dm
+
+    dm._last_attempt.clear()
+    dm._last_refresh_error.clear()
+    DATA_KEEPER.wake()
 
 
 def init_session_state() -> None:
@@ -39,6 +94,7 @@ def init_session_state() -> None:
         st.session_state["option_underlying"] = SETTINGS.option_underlyings[0] if SETTINGS.option_underlyings else "NIFTY"
     if "option_chain" not in st.session_state:
         st.session_state["option_chain"] = None
+    DATA_KEEPER.start()  # idempotent: keeps every watchlist instrument's candles current in the background
     render_engine_sidebar()
 
 
@@ -107,8 +163,14 @@ def get_live_account_state(broker) -> AccountState:
 def run_pipeline_cached(force: bool = False):
     from quant_intelligence.research.pipeline import run_pipeline
 
-    if st.session_state["pipeline_output"] is not None and not force:
-        return st.session_state["pipeline_output"]
+    cached = st.session_state["pipeline_output"]
+    if cached is not None and not force:
+        why = pipeline_needs_refresh(
+            cached, st.session_state.get("pipeline_ran_at"), st.session_state.get("pipeline_token_fp"),
+            st.session_state["instrument"], st.session_state["timeframe"],
+        )
+        if why is None:
+            return cached
 
     end = now_ist()
     start = end - dt.timedelta(days=st.session_state["lookback_days"])
@@ -117,6 +179,8 @@ def run_pipeline_cached(force: bool = False):
         output = run_pipeline(st.session_state["instrument"], st.session_state["timeframe"], start, end)
         st.session_state["pipeline_output"] = output
         st.session_state["pipeline_error"] = None
+        st.session_state["pipeline_ran_at"] = time.monotonic()
+        st.session_state["pipeline_token_fp"] = credentials_fingerprint()
         return output
     except Exception as e:
         st.session_state["pipeline_error"] = str(e)

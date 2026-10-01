@@ -12,6 +12,7 @@ from quant_intelligence.brokers.dhan_api_client import DhanApiClient, DhanApiErr
 from quant_intelligence.config.credentials import mask_secret, token_status, update_dhan_credentials
 from quant_intelligence.config.settings import SETTINGS
 from quant_intelligence.ui import format as F
+from quant_intelligence.ui.state import invalidate_cached_analysis
 
 
 def test_connection() -> tuple[bool, str]:
@@ -46,11 +47,31 @@ def _token_line() -> str:
     return f"Access token: `{mask_secret(SETTINGS.dhan_access_token)}` (expiry unknown)"
 
 
+def _keeper_line() -> str:
+    """One line on automatic renewal: what it will do, and what it last did or why it could not."""
+    from quant_intelligence.brokers.dhan_auth import TOKEN_KEEPER
+
+    ks = TOKEN_KEEPER.status()
+    if not ks["enabled"]:
+        return "Auto-renew: **off** (TOKEN_KEEPER=false)"
+    mode = ("renews before expiry and generates a new token with your PIN + TOTP if it ever expires"
+            if ks["totp"] else
+            f"renews the token when under {SETTINGS.token_renew_before_hours:g}h remain; "
+            "add DHAN_PIN and DHAN_TOTP_SECRET in Secrets to also recover from an expired token")
+    line = f"Auto-renew: **on** - {mode}."
+    if ks["last_success_at"]:
+        line += f" Last {ks['last_action']} {ks['last_success_at']:%d %b %H:%M}."
+    if ks["last_error"]:
+        line += f" Last problem: {ks['last_error']}"
+    return line
+
+
 def render_credentials_panel() -> None:
     expired = token_status(SETTINGS.dhan_access_token)["state"] in ("missing", "expired")
     with st.expander("Dhan API credentials", expanded=expired):
         st.caption(f"Client ID: `{SETTINGS.dhan_client_id or '(not set)'}`")
         st.markdown(_token_line())
+        st.caption(_keeper_line())
         if st.button("Test connection", key="dhan_test_conn"):
             ok, msg = test_connection()
             (st.success if ok else st.error)(msg)
@@ -64,13 +85,18 @@ def render_credentials_panel() -> None:
             except ValueError as e:
                 st.error(str(e))
                 return
-            # Drop clients/brokers built with the old credentials.
+            # Drop clients/brokers built with the old credentials, and every cached analysis computed with them:
+            # otherwise the page keeps showing the old "data quality degraded" answer after the problem is fixed.
             st.session_state["dhan_api_client"] = DhanApiClient()
             st.session_state.pop("dhan_broker", None)
+            invalidate_cached_analysis()
             ok, msg = test_connection()
             if ok:
                 st.success(f"Saved to .env and applied. {msg}")
             else:
                 st.error(f"Saved, but Dhan did not accept it: {msg}")
+            if ok:
+                st.info("Cached analyses were cleared and candles are being refreshed in the background - the page "
+                        "recomputes on its next run.")
             st.caption("On Streamlit Cloud this panel only changes the running app (it resets on reboot and is shared by "
                        "everyone who opens it). Put the token in the app's Secrets for a lasting change.")

@@ -271,7 +271,7 @@ def test_fetch_chain_is_cached_per_underlying_and_can_be_forced_fresh(monkeypatc
 # ---------------------------------------------------------------- lazy chain fetching
 def _output(no_trade=True, strategy="Opening Range Breakout"):
     return SimpleNamespace(
-        ranking=SimpleNamespace(is_no_trade=no_trade, selected_strategy=None if no_trade else strategy,
+        ranking=SimpleNamespace(tie_break=False, is_no_trade=no_trade, selected_strategy=None if no_trade else strategy,
                                 reason="no edge"),
         ohlcv=SimpleNamespace(tail=lambda n: None),
         market_state=SimpleNamespace(get=lambda k, d=None: d),
@@ -286,9 +286,9 @@ def test_a_scan_of_25_instruments_fetches_chains_only_for_triggered_setups(monke
     triggered = {"S3", "S17"}
     fetched = []
     no_trade = SimpleNamespace(order=None, strategy_name=None, setup_status=None, reason="x",
-                               capital_required=None, capital_used=0.0)
+                               capital_required=None, capital_used=0.0, tag=None)
     monkeypatch.setattr(multi_cycle, "run_pipeline", lambda sym, *a: SimpleNamespace(sym=sym, ranking=SimpleNamespace(
-        is_no_trade=sym not in triggered, selected_strategy="ORB")))
+        tie_break=False, is_no_trade=sym not in triggered, selected_strategy="ORB")))
     monkeypatch.setattr(multi_cycle, "chain_needed", lambda out, sym, broker: sym in triggered)
     monkeypatch.setattr(multi_cycle, "fetch_chain", lambda c, sym, pref: fetched.append(sym) or f"chain-{sym}")
     monkeypatch.setattr(multi_cycle, "run_auto_option_cycle", lambda *a, **k: no_trade)
@@ -306,9 +306,9 @@ def test_chain_error_for_a_triggered_instrument_is_reported_and_the_scan_continu
     from quant_intelligence.execution import multi_cycle
 
     no_trade = SimpleNamespace(order=None, strategy_name=None, setup_status=None, reason="x",
-                               capital_required=None, capital_used=0.0)
+                               capital_required=None, capital_used=0.0, tag=None)
     monkeypatch.setattr(multi_cycle, "run_pipeline", lambda sym, *a: SimpleNamespace(ranking=SimpleNamespace(
-        is_no_trade=False, selected_strategy="ORB")))
+        tie_break=False, is_no_trade=False, selected_strategy="ORB")))
     monkeypatch.setattr(multi_cycle, "chain_needed", lambda *a: True)
 
     def fetch(c, sym, pref):

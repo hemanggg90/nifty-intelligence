@@ -7,6 +7,7 @@ import streamlit as st
 
 from quant_intelligence.brokers.dhan_rate_limit import LIMITER
 from quant_intelligence.config.settings import SETTINGS
+from quant_intelligence.data.data_keeper import DATA_KEEPER
 from quant_intelligence.data_adapters.dhan_adapter import DhanAdapter
 from quant_intelligence.database.db import get_engine, get_session
 from quant_intelligence.database.models import MarketDataMetadata, SystemEvent
@@ -67,6 +68,29 @@ st.dataframe(
     width="stretch",
     hide_index=True,
 )
+
+st.divider()
+st.subheader("Data feed (background refresh)")
+feed = DATA_KEEPER.status()
+if not feed["running"]:
+    st.info("The data keeper is not running (it starts with the first page load).")
+else:
+    st.caption(
+        f"Refreshes every {DATA_KEEPER.interval}s \u00b7 {feed['ok']} of {feed['tracked']} instruments current \u00b7 "
+        f"{feed['rounds']} rounds \u00b7 last round {feed['last_round_at']:%H:%M:%S} IST"
+        if feed["last_round_at"] else "Starting - first round in progress."
+    )
+    if feed["error"]:
+        st.warning(f"Data feed problem: {feed['error']}")
+    if DATA_KEEPER.instruments:
+        st.dataframe(
+            [{"Instrument": s, "Last bar": v["last_bar"], "Quality": v["quality"], "Detail": "; ".join(v["issues"][:2])}
+             for s, v in sorted(DATA_KEEPER.instruments.items())],
+            width="stretch", hide_index=True,
+        )
+if st.button("Refresh candles now", key="keeper_wake"):
+    DATA_KEEPER.wake()
+    st.toast("Refresh requested")
 
 st.divider()
 st.subheader("Latest data fetches")

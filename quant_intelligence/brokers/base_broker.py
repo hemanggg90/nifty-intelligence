@@ -33,6 +33,7 @@ class OrderRequest:
     strike: float | None = None
     expiry: str | None = None
     lot_size: int = 1
+    tag: str | None = None  # e.g. "TIE-BREAK": the order came from a tied ranking, sized down
 
 
 @dataclass

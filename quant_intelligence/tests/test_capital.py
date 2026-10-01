@@ -48,7 +48,7 @@ def test_auto_cycle_refuses_a_buy_it_cannot_afford(monkeypatch):
     monkeypatch.setattr(auto_trader, "size_position", lambda *a, **k: 100)  # 100 x Rs 50 = Rs 5,000 > Rs 1,000
 
     output = SimpleNamespace(
-        ranking=SimpleNamespace(is_no_trade=False, selected_strategy="ORB"),
+        ranking=SimpleNamespace(is_no_trade=False, selected_strategy="ORB", tie_break=False),
         ohlcv=SimpleNamespace(tail=lambda n: None),
         market_state=SimpleNamespace(get=lambda k: None),
         data_quality_status="OK",

@@ -30,6 +30,8 @@ from quant_intelligence.research.ranking_core import assess_observations, observ
 from quant_intelligence.strategies.registry import get_all_strategies
 from quant_intelligence.utils.market_profile import profile_for
 
+ALLOW_TIE_BREAK = False  # set by --tie-break: also count the trades taken when the top strategies are tied
+
 
 @dataclass
 class Decision:
@@ -94,7 +96,7 @@ def evaluate_instrument(
             known_mask = (d["exit_idx"] <= t) & (d["entry_idx"] < t)
             metrics = {"max_drawdown_r": max_drawdown_in_r(d["net_r_arr"][known_mask])}
             scores.append(assess_observations(name, d["obs"][known_mask], current, metrics).score)
-        ranking = rank_and_select(scores, "OK")
+        ranking = rank_and_select(scores, "OK", allow_tie_break=ALLOW_TIE_BREAK)
 
         at_t = {n: d["net_r"][t] for n, d in per_strategy.items() if t in d["net_r"]}
         selected = None if ranking.is_no_trade else ranking.selected_strategy
@@ -190,8 +192,11 @@ def main() -> None:
     ap.add_argument("symbols", nargs="*")
     ap.add_argument("--json")
     ap.add_argument("--max-points", type=int, default=None, help="cap decision points per instrument (speed)")
+    ap.add_argument("--tie-break", action="store_true", help="include tie-break trades (production default)")
     args = ap.parse_args()
     symbols = args.symbols or list(SETTINGS.option_underlyings) + [s["symbol"] for s in WATCHLIST_STOCKS]
+    global ALLOW_TIE_BREAK
+    ALLOW_TIE_BREAK = args.tie_break
 
     report, _ = evaluate_symbols(symbols, max_points=args.max_points)
     for sym, r in report["per_symbol"].items():

@@ -237,6 +237,7 @@ class Order(Base):
     strike = Column(Float)
     expiry = Column(String(16))
     lot_size = Column(Integer)
+    tag = Column(String(24))  # e.g. TIE-BREAK
 
 
 class Fill(Base):
@@ -275,6 +276,7 @@ class Position(Base):
     strike = Column(Float)
     expiry = Column(String(16))
     transaction = Column(String(8))  # BUY / SELL
+    tag = Column(String(24))  # e.g. TIE-BREAK
 
 
 class RiskEvent(Base):

@@ -74,6 +74,7 @@ class PaperBroker(BaseBroker):
             "strike": order.strike,
             "expiry": order.expiry,
             "transaction": transaction if order.option_type else None,
+            "tag": order.tag,
         }
 
         ack = self._record(order, order_id, "FILLED", None, fill_price=simulated_fill_price)
@@ -143,6 +144,7 @@ class PaperBroker(BaseBroker):
                         strike=order.strike,
                         expiry=order.expiry,
                         lot_size=order.lot_size,
+                        tag=order.tag,
                     )
                 )
         except Exception:

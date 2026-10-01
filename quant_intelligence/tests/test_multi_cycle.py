@@ -15,9 +15,9 @@ def test_multi_cycle_scans_every_symbol_as_options_and_isolates_failures(monkeyp
         seen.append(symbol)
         if symbol == "BAD":
             raise RuntimeError("no data")
-        return SimpleNamespace(ranking=SimpleNamespace(is_no_trade=True, selected_strategy=None), ohlcv=None)
+        return SimpleNamespace(ranking=SimpleNamespace(tie_break=False, is_no_trade=True, selected_strategy=None), ohlcv=None)
 
-    no_trade = SimpleNamespace(order=None, strategy_name=None, setup_status=None, reason="NO TRADE", capital_required=None, capital_used=0.0)
+    no_trade = SimpleNamespace(order=None, strategy_name=None, setup_status=None, reason="NO TRADE", capital_required=None, capital_used=0.0, tag=None)
     monkeypatch.setattr(multi_cycle, "run_pipeline", fake_pipeline)
     monkeypatch.setattr(multi_cycle, "run_auto_option_cycle", lambda *a, **k: no_trade)
 
@@ -32,10 +32,10 @@ def test_multi_cycle_scans_every_symbol_as_options_and_isolates_failures(monkeyp
 
 def test_every_instrument_incl_stocks_goes_through_the_option_cycle(monkeypatch):
     routed = []
-    no_trade = SimpleNamespace(order=None, strategy_name=None, setup_status=None, reason="NO TRADE", capital_required=None, capital_used=0.0)
+    no_trade = SimpleNamespace(order=None, strategy_name=None, setup_status=None, reason="NO TRADE", capital_required=None, capital_used=0.0, tag=None)
     monkeypatch.setattr(
         multi_cycle, "run_pipeline",
-        lambda *a: SimpleNamespace(ranking=SimpleNamespace(is_no_trade=True, selected_strategy=None), ohlcv=None),
+        lambda *a: SimpleNamespace(ranking=SimpleNamespace(tie_break=False, is_no_trade=True, selected_strategy=None), ohlcv=None),
     )
     monkeypatch.setattr(multi_cycle, "run_auto_option_cycle", lambda output, symbol, *a, **k: routed.append(symbol) or no_trade)
 

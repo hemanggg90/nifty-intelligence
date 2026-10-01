@@ -200,8 +200,43 @@ with `timestamp,open,high,low,close,volume`) -> **Dhan** -> error. Results are c
   `DEGRADED`/`FAIL` force NO TRADE and the risk engine vetoes anyway.
 - **No volume on indices.** Dhan gives index candles no volume, so volume-dependent strategies
   (Momentum, VWAP Mean Reversion, Unusual Volume Fade) are skipped for NIFTY/BANKNIFTY.
-- **Sessions:** NSE 09:15-15:30 IST, MCX 09:00-23:55 IST (`utils/market_profile.py`). Exchange holidays
-  are not modelled (weekends only).
+- **Sessions and holidays:** NSE 09:15-15:30 IST, MCX 09:00-23:55 IST (`utils/market_profile.py`). Weekends and
+  exchange holidays are skipped when judging staleness, market-open state and runner gating. Built in: the
+  fixed-date holidays (26 Jan, 15 Aug, 2 Oct, 25 Dec for NSE and MCX; 1 May for NSE only). Holidays that move
+  every year (Holi, Diwali, Eid, Good Friday ...) are **not guessed**: add them to
+  `quant_intelligence/config/market_holidays.txt` (`YYYY-MM-DD [NSE|MCX] name`, picked up without a restart).
+  A day missing from the list is treated as a trading day, so keep it current from the exchanges' circulars.
+
+### Keeping data fresh by itself (data keeper)
+
+Candles used to be downloaded only when a runner scanned or a page ran. With the auto-traders stopped and
+nobody on the page they aged past the 30-minute tolerance and every decision became "data quality DEGRADED -
+NO TRADE" until someone pressed a button. A background **data keeper** (`data/data_keeper.py`, starts with the
+first page load or runner start) now refreshes all 25 watchlist instruments every `DATA_KEEPER_INTERVAL_SEC`
+(60 s). It is a no-op when the cache already holds the latest closed bar; otherwise it costs one small tail
+request, spaced by the Dhan rate limiter. Status is in the top status bar ("Data feed: current / N stale"), a
+banner on the NSE/MCX panels naming the reason, and a table with a **Refresh candles now** button on the
+*System Logs & Health* page. Pages also recompute their cached analysis when the credentials change, when the
+last result was not OK for a minute, or when a new bar has closed - saving a new token clears stale results
+immediately. Disable with `DATA_KEEPER=false`.
+
+### Token lifecycle (token keeper)
+
+Dhan access tokens last 24 hours. The **token keeper** (`brokers/dhan_auth.py`) checks the token's own expiry
+(no network) and:
+
+1. **Renews** it with Dhan's `RenewToken` when under `TOKEN_RENEW_BEFORE_HOURS` (8) remain - needs no extra setup,
+   but only works while the token is still active.
+2. If `DHAN_PIN` and `DHAN_TOTP_SECRET` are set, **generates** a new token from a time-based one-time code (RFC 6238,
+   standard library) - this also recovers from a token that has already expired.
+
+It makes at most one attempt at a time, waits 10 minutes after a failure (a wrong PIN must not lock the account),
+never puts the PIN/TOTP in logs or error messages, and applies the new token to the running app (and `.env` when
+writable). The status shows in *API Keys*. **Treat `DHAN_PIN` and `DHAN_TOTP_SECRET` like passwords:** put them in
+Streamlit Secrets or `.env`, never in git or chat; they let anyone who has them mint tokens for your account. On
+Streamlit Cloud the sidebar only changes the running app (lost on reboot) - put lasting values in the app's Secrets.
+Disable with `TOKEN_KEEPER=false`. The renew/generate calls follow Dhan's documented endpoints but could only be
+tested against mocked responses, not a live account - confirm the first renewal in the log (`token_keeper`).
 - `data_adapters/synthetic.py` still exists but is **used only by the test-suite**, never at runtime.
 
 ## Research layer
@@ -401,6 +436,12 @@ SQLite even with no `.env`.
 | `DHAN_BREAKER_THRESHOLD`, `DHAN_BREAKER_COOLDOWN_SEC`, `DHAN_BREAKER_MAX_COOLDOWN_SEC` | `3`, `30`, `120` | Consecutive 429s that pause reads, and the pause length (doubles up to the max). |
 | `DHAN_AUTH_FAILURE_COOLDOWN_SEC` | `300` | How long to stop sending requests with a token Dhan rejected (401). |
 | `DHAN_QUOTE_CACHE_TTL_SEC`, `DHAN_CHAIN_CACHE_TTL_SEC` | `2`, `15` | How long a live-price / option-chain response is shared between tabs and the auto-traders. |
+| `TIE_BREAK_PAPER`, `TIE_BREAK_LIVE`, `TIE_BREAK_SIZE_FACTOR` | `true`, `true`, `0.5` | Trade the top strategy (tagged TIE-BREAK, sized x factor) when the best two are statistically tied. |
+| `DATA_KEEPER`, `DATA_KEEPER_INTERVAL_SEC` | `true`, `60` | Background candle refresh for every watchlist instrument. |
+| `TOKEN_KEEPER`, `TOKEN_RENEW_BEFORE_HOURS` | `true`, `8` | Auto-renew the Dhan token when this many hours remain. |
+| `DHAN_PIN`, `DHAN_TOTP_SECRET` | *(unset)* | Optional. With both set the token keeper can generate a new token even after expiry. **Secrets: never commit or paste them.** |
+| `HOLIDAYS_FILE` | `config/market_holidays.txt` | File of variable exchange holidays (`YYYY-MM-DD [NSE|MCX] name`). |
+| `LOGS_DIR` | `logs/` | Where `system.log` is written (tests point it at a temp dir). |
 | `OPTION_PREMIUM_PCT`, `OPTION_DELTA` | `1.5`, `0.5` | Assumed option premium (% of the underlying's price) and delta used to convert the underlying backtest into option P&L and costs. |
 
 > The statutory rates are the published exchange/government charges (taken from Zerodha's public charges
@@ -440,7 +481,7 @@ quant_intelligence/
   app.py                       Streamlit command center
   pages/                       01-14 dashboard pages
   config/        settings.py (env config) | watchlist.py (stocks, commodities) | credentials.py (token updates)
-  data/          data_manager.py (source order, cache, quality) | quality.py (validation/cleaning)
+  data/          data_manager.py (source order, cache, quality) | data_keeper.py (background refresh) | quality.py (validation/cleaning)
   data_adapters/ dhan_adapter | dhan_instrument_master (scrip master) | csv_adapter | nse_heatmap | synthetic (tests only)
   features/      feature_engine.py
   market_state/  latest feature snapshot
@@ -455,7 +496,7 @@ quant_intelligence/
                  position_monitor | square_off | capital
   risk/          risk_engine.py
   brokers/       base_broker | paper_broker | dhan_broker (live) | dhan_api_client (REST)
-                 dhan_rate_limit (account-wide limiter, 429 breaker) | dhan_cache (shared price/chain caches)
+                 dhan_rate_limit (account-wide limiter, 429 breaker) | dhan_cache (shared price/chain caches) | dhan_auth (token renew/TOTP)
   database/      db.py | models.py
   reports/       report_generator.py
   ui/            state | theme | components (status bar, KPI tiles, position cards) | charts (Plotly) | tables
@@ -481,7 +522,7 @@ later are migrated automatically on start (`ALTER TABLE ... ADD COLUMN`).
 ## Testing
 
 ```bash
-python -m pytest -q          # 150+ tests, ~1 minute, no network
+python -m pytest -q          # 300+ tests, ~1 minute, no network
 python scripts/ui_smoke_test.py   # runs every page headlessly
 ```
 
@@ -489,7 +530,7 @@ Tests cover the data-quality gate, timezone alignment, feature no-look-ahead, st
 analogues, ranking, the risk engine, the paper broker, option selection and the premium model, Dhan client
 request shapes/retry/caching (HTTP is mocked), capital accounting, the background engine (start/stop,
 failure isolation, market-hours and kill-switch behaviour), square-off and restart recovery. Tests use a
-temporary database and never write to your real one.
+temporary database and log directory and never write to your real ones, nor start the background keepers.
 
 ## Troubleshooting
 
@@ -502,6 +543,9 @@ temporary database and never write to your real one.
 | Data quality `FAIL` / `DEGRADED` | Read the issues in the log: stale data (market closed), gaps, bad bars, or misaligned timezone. The system stays in NO TRADE. |
 | Everything is `NO TRADE` | Often correct: no strategy clears the edge/confidence bar, or data isn't `OK`. See Known limitations. |
 | Chain error for one instrument | Check `logs/system.log`; usually rate limit or an expired token. |
+| Data feed shows "N stale" | Read the reason on the *Health* page. Usually an expired Dhan token (see *Token lifecycle*), or a holiday not yet in `market_holidays.txt`. The keeper retries every minute and recovers by itself once the token is valid. |
+| NIFTY says NO TRADE "not distinguishable" | The top strategies are statistically tied. With `TIE_BREAK_PAPER` on the paper trader takes the top one (tagged TIE-BREAK, half size); with it off it stays out. |
+| Fake "Momentum" trades at premium ~100 in Positions | Left by early test runs. `python scripts/purge_test_trades.py` lists them (dry run); `--apply` backs up the DB then deletes them. |
 | Trades missing after a restart | Paper state is in memory; today's book is restored from the database, older open rows are marked `STALE`. |
 | Times look 5.5 h off | Server clock is UTC; the app uses IST internally - restart on the latest version. |
 
@@ -539,8 +583,16 @@ temporary database and never write to your real one.
 - **Ranking is statistically thin.** Analogues are the 30 nearest setups, mostly from the same sessions
   (autocorrelated), and the winner is picked from many strategies on the same data used to estimate its
   edge - so the optimism in "best of N" is not corrected.
+- **Tie-break trades have no proven edge.** When the two best strategies cannot be told apart (score gap < 0.08 or
+  z < 1.0) the ranker used to say NO TRADE. By choice (`TIE_BREAK_PAPER`, `TIE_BREAK_LIVE`, both on) it now picks
+  the top one if it is still *eligible* (positive shrunk edge, adequate confidence, data OK), tags the order
+  `TIE-BREAK` and sizes it at `TIE_BREAK_SIZE_FACTOR` (0.5) of normal. Those are by construction the cases where
+  the statistics could not separate the candidates, so expect them to be roughly breakeven-to-negative after costs
+  (see the evaluator numbers below). Live trading is still manual (double gate, confirmation checkbox, risk engine
+  unchanged); the Live page shows a red TIE-BREAK banner. Turn it off with `TIE_BREAK_LIVE=false` /
+  `TIE_BREAK_PAPER=false` (data not OK, nothing eligible or an ineligible leader stay NO TRADE regardless).
 - **Paper != live.** Paper fills use simple slippage on the last price; real fills depend on liquidity and
-  spread. Sold-option margin is not modelled. Exchange holidays are not modelled.
+  spread. Sold-option margin is not modelled. Only holidays listed in `market_holidays.txt` (plus the fixed-date ones) are modelled.
 - **Live trading is unproven** against a funded account.
 - **Paper state is in memory** (restored from the database on restart for the current day only).
 

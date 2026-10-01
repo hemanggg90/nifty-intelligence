@@ -17,6 +17,7 @@ import streamlit as st
 
 from quant_intelligence.config.settings import SETTINGS
 from quant_intelligence.config.watchlist import WATCHLIST_COMMODITIES, WATCHLIST_STOCKS
+from quant_intelligence.data.data_keeper import DATA_KEEPER
 from quant_intelligence.database.db import get_session
 from quant_intelligence.database.models import Order, Position, RiskEvent
 from quant_intelligence.execution.capital import capital_summary
@@ -54,9 +55,20 @@ def _universe(commodities: bool) -> tuple[list[str], list[str], list[dict]]:
 
 # ---------------------------------------------------------------------------------------------- live header
 @st.fragment(run_every="5s")
-def _live_header(runner: ScanRunner, market: str) -> None:
+def _live_header(runner: ScanRunner, market: str, symbols: list[str]) -> None:
     """Runner status line and the account / market tiles. Display only: leaving the page never affects the worker."""
     status = runner.status()
+    feed = DATA_KEEPER.status()
+    stale_here = [s for s in feed["not_ok"] if s in symbols]
+    if stale_here:
+        issues = [i for sym in stale_here for i in DATA_KEEPER.instruments[sym]["issues"]]
+        reason = next((i for i in issues if "refresh failed" in i), issues[0] if issues else None)
+        # Say it plainly instead of leaving a silent old answer: what is stale, why, and that it is being retried.
+        st.info(
+            f"Candles for {len(stale_here)} of {len(symbols)} {market} instruments are not current "
+            f"({', '.join(stale_here[:4])}{'...' if len(stale_here) > 4 else ''}). The data keeper retries every "
+            f"{DATA_KEEPER.interval}s" + (f" - {reason}" if reason else ".")
+        )
     s = session_status(now_ist(), runner.profile)
     eod = max(0.0, s["change_in"].total_seconds() / 60.0 - SETTINGS.eod_square_off_minutes) if s["open"] else None
     chips = [chip("RUNNING" if status["running"] else "STOPPED", "good" if status["running"] else "muted")]
@@ -269,7 +281,7 @@ def render_multi_instrument_panel(runner: ScanRunner = ENGINE, commodities: bool
             "instrument and fetches an option chain only when a setup triggers."
         )
 
-    _live_header(runner, market)
+    _live_header(runner, market, [m["symbol"] for m in meta])
 
     st.markdown("#### Market watch")
     _market_watch(runner, meta, timeframe)

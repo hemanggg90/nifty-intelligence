@@ -24,7 +24,9 @@ def today_ist() -> dt.date:
 
 
 def is_market_open(moment: dt.datetime | None = None, profile: MarketProfile = NSE) -> bool:
-    """Weekday within the profile's session (NSE 09:15-15:30 IST by default). Exchange holidays
-    are not modelled."""
+    """Trading day (weekday, not an exchange holiday) within the profile's session (NSE 09:15-15:30 IST
+    by default)."""
+    from quant_intelligence.config.holidays import is_trading_day
+
     moment = moment or now_ist()
-    return moment.weekday() < 5 and profile.open <= moment.time() < profile.close
+    return is_trading_day(moment.date(), profile.name) and profile.open <= moment.time() < profile.close

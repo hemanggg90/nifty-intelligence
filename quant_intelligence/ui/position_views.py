@@ -17,7 +17,7 @@ from quant_intelligence.utils.market_profile import profile_for
 _COLUMNS = [
     "position_id", "instrument", "strategy", "contract", "side", "option_type", "strike", "expiry", "qty",
     "entry", "stop", "target", "status", "opened_at", "closed_at", "exit_price", "exit_reason", "security_id",
-    "market", "invested", "gross_pnl", "charges", "net_pnl", "return_pct", "held",
+    "market", "invested", "gross_pnl", "charges", "net_pnl", "return_pct", "held", "tag",
 ]
 
 
@@ -77,6 +77,7 @@ def positions_frame(rows: Iterable, now: dt.datetime | None = None) -> pd.DataFr
                 "net_pnl": None if gross is None else gross - (charges or 0.0),
                 "return_pct": (gross / ((entry or 0.0) * qty) * 100.0) if gross is not None and entry and qty else None,
                 "held": (end - opened) if opened is not None else None,
+                "tag": _get(r, "tag"),
             }
         )
     return pd.DataFrame.from_records(records, columns=_COLUMNS)
@@ -231,10 +232,11 @@ def orders_frame(rows: Iterable) -> pd.DataFrame:
                 "reject_reason": _get(o, "reject_reason"),
                 "strategy_name": _get(o, "strategy_name"),
                 "mode": _get(o, "mode"),
+                "tag": _get(o, "tag"),
             }
         )
     cols = ["timestamp", "order_id", "instrument", "contract", "side", "quantity", "order_type", "price",
-            "status", "reject_reason", "strategy_name", "mode"]
+            "status", "reject_reason", "strategy_name", "mode", "tag"]
     return pd.DataFrame.from_records(records, columns=cols)
 
 

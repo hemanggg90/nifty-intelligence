@@ -3,15 +3,15 @@
 Used to judge data staleness against when a new bar is actually expected
 (NSE market hours), rather than raw wall-clock time - a pipeline run at
 20:00 on a Monday should not treat the 15:30 close as "5 hours stale".
-Holidays are not modelled (weekends only); a holiday will be treated as an
-ordinary non-trading day, which only makes the staleness check slightly more
-lenient than the exact NSE calendar, never stricter.
+Exchange holidays come from `config/holidays.py` (fixed-date ones built in, the variable ones from the
+user-editable `config/market_holidays.txt`); a holiday missing from there is treated as a trading day.
 """
 from __future__ import annotations
 
 import datetime as dt
 from zoneinfo import ZoneInfo
 
+from quant_intelligence.config.holidays import is_trading_day
 from quant_intelligence.utils.market_profile import NSE, MarketProfile
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -37,8 +37,8 @@ def most_recent_expected_bar_time(now: dt.datetime, profile: MarketProfile = NSE
     candidate = ist_now
 
     while True:
-        is_weekday = candidate.weekday() < 5  # Mon=0 .. Fri=4
-        if is_weekday and candidate.time() >= SESSION_OPEN:
+        is_open_day = is_trading_day(candidate.date(), profile.name)
+        if is_open_day and candidate.time() >= SESSION_OPEN:
             session_close = candidate.replace(
                 hour=SESSION_CLOSE.hour, minute=SESSION_CLOSE.minute, second=0, microsecond=0
             )
@@ -46,7 +46,7 @@ def most_recent_expected_bar_time(now: dt.datetime, profile: MarketProfile = NSE
                 return candidate if candidate == ist_now else session_close
             return session_close
 
-        # Before market open, or a weekend day: step back to the prior day's close.
+        # Before market open, or a weekend/holiday: step back to the prior day's close.
         candidate = (candidate - dt.timedelta(days=1)).replace(
             hour=SESSION_CLOSE.hour, minute=SESSION_CLOSE.minute, second=0, microsecond=0
         )
@@ -74,18 +74,18 @@ def session_status(now: dt.datetime, profile: MarketProfile = NSE) -> dict:
     """Is the session open at `now` (naive IST), and how long until that changes?
 
     Returns {"open": bool, "change_in": timedelta, "label": "closes in 2h 14m" | "opens in 17h 5m"}.
-    Weekends are closed; exchange holidays are not modelled.
+    Weekends and exchange holidays are closed.
     """
     now = now.replace(tzinfo=None)
     today_open = dt.datetime.combine(now.date(), profile.open)
     today_close = dt.datetime.combine(now.date(), profile.close)
-    if now.weekday() < 5 and today_open <= now < today_close:
+    if is_trading_day(now.date(), profile.name) and today_open <= now < today_close:
         delta = today_close - now
         return {"open": True, "change_in": delta, "label": "closes in " + _short(delta)}
     for offset in range(0, 8):
         day = now.date() + dt.timedelta(days=offset)
         candidate = dt.datetime.combine(day, profile.open)
-        if day.weekday() < 5 and candidate > now:
+        if is_trading_day(day, profile.name) and candidate > now:
             delta = candidate - now
             return {"open": False, "change_in": delta, "label": "opens in " + _short(delta)}
     return {"open": False, "change_in": dt.timedelta(0), "label": "closed"}

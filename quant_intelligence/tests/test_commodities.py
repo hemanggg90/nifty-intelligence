@@ -184,11 +184,11 @@ def test_multi_cycle_tags_commodities_and_reports_fills_under_the_lock(monkeypat
     fills = []
     filled = SimpleNamespace(
         order=SimpleNamespace(status="FILLED"), strategy_name="S", setup_status="SETUP_TRIGGERED",
-        reason="ok", capital_required=10.0, capital_used=10.0,
+        reason="ok", capital_required=10.0, capital_used=10.0, tag=None,
     )
     monkeypatch.setattr(
         multi_cycle, "run_pipeline",
-        lambda *a: SimpleNamespace(ranking=SimpleNamespace(is_no_trade=False, selected_strategy="S"), ohlcv=None),
+        lambda *a: SimpleNamespace(ranking=SimpleNamespace(tie_break=False, is_no_trade=False, selected_strategy="S"), ohlcv=None),
     )
 
     def fake_cycle(*a, **k):

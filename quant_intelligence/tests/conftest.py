@@ -9,6 +9,9 @@ import tempfile
 
 # Must happen before quant_intelligence.config.settings is imported: keeps tests from
 # writing rows into the real dashboard database.
+os.environ["LOGS_DIR"] = tempfile.mkdtemp(prefix="qi_test_logs_")  # tests must not write into the real logs/
+os.environ["TOKEN_KEEPER"] = "false"  # tests must never renew/replace tokens or call Dhan auth
+os.environ["DATA_KEEPER"] = "false"  # the real background thread must never start (or call Dhan) during tests
 os.environ["DATABASE_URL"] = "sqlite:///" + (Path(tempfile.mkdtemp(prefix="qi_test_db_")) / "test.db").as_posix()
 
 import pytest

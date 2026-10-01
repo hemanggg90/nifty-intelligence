@@ -76,8 +76,13 @@ class DataManager:
         end: dt.datetime,
         force_refresh: bool = False,
         prefer_source: str | None = None,
+        quiet: bool = False,
     ) -> tuple[pd.DataFrame, dict]:
-        """Return (dataframe, metadata_dict). metadata includes source + quality report."""
+        """Return (dataframe, metadata_dict). metadata includes source + quality report.
+
+        `quiet=True` (used by the background data keeper) skips the per-call metadata row and INFO log when the
+        data is OK, so a refresh every minute does not flood the database and the log."""
+        self._quiet = quiet
         cache_path = self._cache_path(instrument, timeframe)
 
         if not force_refresh and cache_path.exists():
@@ -206,6 +211,9 @@ class DataManager:
             "quality_status": report.status,
             "quality_report": report.as_dict(),
         }
+
+        if getattr(self, "_quiet", False) and report.status == "OK":
+            return df, metadata
 
         try:
             from quant_intelligence.database.db import get_session

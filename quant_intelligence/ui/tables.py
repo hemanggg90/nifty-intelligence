@@ -41,6 +41,7 @@ def trades_table(df: pd.DataFrame):
             "Held": df["held"].map(_held),
             "Exit reason": df["exit_reason"].map(exit_reason_label),
             "Strategy": df["strategy"],
+            "Tag": df["tag"].fillna(""),
         }
     )
     return (
@@ -65,6 +66,7 @@ def orders_table(df: pd.DataFrame):
             "Status": df["status"].map(lambda s: {"FILLED": "✓ FILLED", "REJECTED": "✖ REJECTED"}.get(s, s)),
             "Reason": df["reject_reason"].fillna(""),
             "Strategy": df["strategy_name"],
+            "Tag": df["tag"].fillna(""),
             "Mode": df["mode"],
         }
     )

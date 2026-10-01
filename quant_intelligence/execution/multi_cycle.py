@@ -99,6 +99,7 @@ def run_multi_instrument_cycle(
                 "status": cycle.setup_status or ("NO_TRADE" if output.ranking.is_no_trade else "-"),
                 "capital_required": round(cycle.capital_required, 2) if cycle.capital_required is not None else None,
                 "capital_used": round(cycle.capital_used, 2),
+                "tag": cycle.tag,
                 "detail": cycle.reason,
             }
         )

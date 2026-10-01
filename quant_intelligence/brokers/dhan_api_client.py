@@ -56,6 +56,7 @@ def clear_expiry_cache() -> None:
 
 class DhanApiClient:
     def __init__(self, client_id: str | None = None, access_token: str | None = None, base_url: str | None = None):
+        self._follows_settings = client_id is None and access_token is None  # picks up renewed tokens by itself
         self.client_id = client_id or SETTINGS.dhan_client_id
         self.access_token = access_token or SETTINGS.dhan_access_token
         self.base_url = (base_url or SETTINGS.dhan_base_url).rstrip("/")
@@ -83,10 +84,19 @@ class DhanApiClient:
 
     def _request(self, method: str, path: str, body: dict | None = None, *, category: str, retry: bool = True) -> dict:
         """One Dhan call: breaker check -> spacing -> request -> 429 backoff/retry (reads only)."""
+        if self._follows_settings:
+            self.client_id, self.access_token = SETTINGS.dhan_client_id, SETTINGS.dhan_access_token
         self._require_configured()
         limits = SETTINGS.dhan
         attempts = limits.max_attempts if retry else 1
         status = token_status(self.access_token)
+        if self._follows_settings and status["state"] == "expired":
+            # One automatic recovery (renew/generate) before giving up; the keeper rate-limits its own attempts.
+            from quant_intelligence.brokers.dhan_auth import TOKEN_KEEPER
+
+            if TOKEN_KEEPER.ensure_fresh() in ("renewed", "generated"):
+                self.client_id, self.access_token = SETTINGS.dhan_client_id, SETTINGS.dhan_access_token
+                status = token_status(self.access_token)
         if status["state"] == "expired":
             raise DhanApiError(
                 f"Your Dhan access token expired on {status['expires_at']:%d %b %H:%M} IST (tokens last about 24 hours). "

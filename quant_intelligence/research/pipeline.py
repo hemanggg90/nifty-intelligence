@@ -115,7 +115,7 @@ def run_pipeline(
         )
         scores.append(assessment.score)
 
-    ranking = rank_and_select(scores, data_quality_status)
+    ranking = rank_and_select(scores, data_quality_status, allow_tie_break=True)
     quality_issues = list(metadata.get("quality_report", {}).get("issues", []))
     if ranking.is_no_trade and data_quality_status != "OK" and quality_issues:
         # "Data quality is DEGRADED" alone does not tell the user what to fix; add the actual findings.

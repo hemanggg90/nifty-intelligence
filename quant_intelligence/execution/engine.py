@@ -81,6 +81,9 @@ class ScanRunner:
 
     def start(self, index_symbols, stock_symbols, timeframe: str, lookback_days: int,
               interval_seconds: int | None = None, market_hours_only: bool = True) -> bool:
+        from quant_intelligence.data.data_keeper import DATA_KEEPER
+
+        DATA_KEEPER.start()  # candles stay current even between this runner's own scans
         with self.owner.lock:
             if self.running:
                 return False
