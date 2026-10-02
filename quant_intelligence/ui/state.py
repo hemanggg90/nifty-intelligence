@@ -142,10 +142,12 @@ def get_live_account_state(broker) -> AccountState:
     open_positions = [p for p in broker.get_positions() if p.get("netQty", 0) != 0]
     exposure_by_strategy: dict[str, float] = {}
     total_exposure = 0.0
+    open_summary = []
     for p in open_positions:
         risk_amt = abs(p.get("netQty", 0)) * abs(p.get("buyAvg", 0.0) - p.get("sellAvg", 0.0))
         exposure_by_strategy["dhan_live"] = exposure_by_strategy.get("dhan_live", 0.0) + risk_amt
         total_exposure += risk_amt
+        open_summary.append(live_position_view(p))
 
     return AccountState(
         equity=equity,
@@ -157,7 +159,26 @@ def get_live_account_state(broker) -> AccountState:
         total_exposure=total_exposure,
         broker_connected=broker.is_connected(),
         kill_switch_engaged=ENGINE.kill_switch,
+        open_positions=open_summary,
     )
+
+
+def live_position_view(p: dict) -> dict:
+    """{"instrument", "direction", "risk"} for a Dhan position, for the risk engine's open-count and
+    correlated-group checks. Direction is the view on the UNDERLYING: long call / short put = LONG,
+    long put / short call = SHORT; a non-option position follows its own sign. Per-position stop risk
+    is not known for live positions, so `risk` is 0 (the group COUNT limit still applies)."""
+    symbol = str(p.get("tradingSymbol") or "")
+    underlying = symbol.split("-", 1)[0].strip().upper()
+    long_qty = (p.get("netQty") or 0) > 0
+    option = str(p.get("drvOptionType") or "").upper()
+    if option in ("CALL", "CE"):
+        direction = "LONG" if long_qty else "SHORT"
+    elif option in ("PUT", "PE"):
+        direction = "SHORT" if long_qty else "LONG"
+    else:
+        direction = "LONG" if long_qty else "SHORT"
+    return {"instrument": underlying, "direction": direction, "risk": 0.0}
 
 
 def run_pipeline_cached(force: bool = False):

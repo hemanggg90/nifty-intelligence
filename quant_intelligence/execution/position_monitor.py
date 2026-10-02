@@ -59,6 +59,7 @@ def monitor_positions(broker: PaperBroker, latest_bar: pd.Series) -> list[dict]:
         direction = pos["direction"]
         stop = pos["stop_price"]
         target = pos["target_price"]
+        pos["last_price"] = float(latest_bar["close"])
 
         hit_stop = (latest_bar["low"] <= stop) if direction == "LONG" else (latest_bar["high"] >= stop)
         hit_target = (latest_bar["high"] >= target) if direction == "LONG" else (latest_bar["low"] <= target)
@@ -97,6 +98,7 @@ def monitor_option_positions(broker: PaperBroker, api_client) -> list[dict]:
         premium = quote.get("last_price")
         if premium is None:
             continue
+        pos["last_price"] = float(premium)  # marks the position to market for the risk engine's equity
 
         transaction = pos.get("transaction") or ("BUY" if pos["direction"] == "LONG" else "SELL")
         stop, target = pos["stop_price"], pos["target_price"]
@@ -135,6 +137,9 @@ def fetch_option_ltp_map(broker: PaperBroker, api_client) -> dict:
         quote = quotes.get(str(sid))
         if quote and quote.get("last_price") is not None:
             ltp_map[sid] = quote["last_price"]
+    for p in option_positions:
+        if p.get("security_id") in ltp_map:
+            p["last_price"] = float(ltp_map[p["security_id"]])
     return ltp_map
 
 

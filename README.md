@@ -315,15 +315,32 @@ tested against mocked responses, not a live account - confirm the first renewal 
 approval/veto (with reason and per-check results) to the `risk_events` table. Checks run in this order:
 
 1. Emergency kill switch  2. Broker connected  3. Data quality OK  4. Daily loss limit
-5. Max drawdown from peak  6. Max trades per day  7. Max risk per trade
-8. Max exposure per strategy  9. Max total portfolio exposure  10. Liquidity (relative volume >= 0.3)
+5. Max drawdown from peak  6. Profit giveback lock  7. Losing-streak cooldown  8. Max trades per day
+9. Max open positions  10. Strategy daily loss stop  11. Max risk per trade (x size multiplier)
+12. Max exposure per strategy  13. Max total portfolio exposure  14. Correlated-group positions and risk
+15. Liquidity (relative volume >= 0.3)
 
 Defaults (all overridable by environment variable): risk per trade **1%**, daily loss **3%**, drawdown
 **8%**, trades per day **6**, per-strategy exposure **10%**, portfolio exposure **20%**, capital in one
-trade **5%** of equity.
+trade **5%** of equity, **4** open positions, **2** same-direction positions and **2%** open risk per
+correlated group, a **60-minute** pause after **3** losers in a row, a strategy stops for the day after
+**2** losses, and no new trades once a day that reached **+1.5%** gives back **half** of it.
 
-**Sizing** (`execution/auto_trader.py::size_position`): `quantity = floor(0.9 x risk budget / stop
-distance)` in whole lots, then capped so premium x quantity <= the per-trade capital cap.
+**Equity and drawdown.** Equity is **marked to market** (cash + unrealised P&L from the position
+monitor's live prices), so open losses count toward the daily-loss and drawdown limits before they
+close. The drawdown peak is carried **across days and restarts** (rebuilt from all closed trades);
+reset it on purpose from the Risk Control page.
+
+**Correlation groups** (`config/risk_groups.py`): all index underlyings are one group; watchlist stocks
+are grouped by sector (the four banks are one group); MCX commodities by sector.
+
+**Size multiplier** (`risk_engine.risk_multiplier`): the per-trade risk budget is scaled by the smallest
+of: a drawdown throttle (100% below 3% drawdown, falling linearly to 25% at the 8% hard stop), 50% once
+half the daily loss limit is used, and 50% after 2 losing trades in a row. The Risk Control page shows
+the current multiplier and why.
+
+**Sizing** (`execution/auto_trader.py::size_position`): `quantity = floor(0.9 x risk budget x size
+multiplier / stop distance)` in whole lots, then capped so premium x quantity <= the per-trade capital cap.
 
 **Capital accounting** (`execution/capital.py`): the paper broker only moves cash when a position
 *closes*, so capital used is derived from open BUY positions (entry premium x quantity) and
@@ -425,7 +442,18 @@ SQLite even with no `.env`.
 | `MAX_STRATEGY_EXPOSURE_PCT` | `10.0` | Risk concentrated in one strategy. |
 | `MAX_PORTFOLIO_EXPOSURE_PCT` | `20.0` | Total capital at risk. |
 | `MAX_TRADES_PER_DAY` | `6` | Daily trade count limit. |
-| `MAX_DRAWDOWN_PCT` | `8.0` | Max drawdown from peak equity. |
+| `MAX_DRAWDOWN_PCT` | `8.0` | Max drawdown from peak equity (carried across days). |
+| `DD_THROTTLE_START_PCT` | `3.0` | Drawdown at which position size starts shrinking. |
+| `DD_THROTTLE_FLOOR` | `0.25` | Size multiplier reached at `MAX_DRAWDOWN_PCT`. |
+| `LOSS_STREAK_THROTTLE_AFTER` | `2` | Half size after this many losers in a row today (0 disables). |
+| `MAX_OPEN_POSITIONS` | `4` | Max positions open at once (0 disables). |
+| `MAX_GROUP_POSITIONS` | `2` | Max same-direction positions per correlation group (0 disables). |
+| `MAX_GROUP_RISK_PCT` | `2.0` | Max open risk per correlation group, % of equity (0 disables). |
+| `LOSS_STREAK_PAUSE` | `3` | Losers in a row that pause new entries (0 disables). |
+| `LOSS_STREAK_PAUSE_MIN` | `60` | Length of that pause, minutes. |
+| `STRATEGY_MAX_LOSSES_PER_DAY` | `2` | Losses after which a strategy stops for the day (0 disables). |
+| `PROFIT_LOCK_TRIGGER_PCT` | `1.5` | Day P&L (% of equity) that arms the profit lock (0 disables). |
+| `PROFIT_LOCK_GIVEBACK` | `0.5` | Fraction of the day's peak P&L that, once given back, stops new trades. |
 | `BROKERAGE_PER_ORDER_INR` | `20` | Dhan's flat brokerage per executed F&O order. |
 | `SLIPPAGE_TICKS`, `TICK_SIZE` | `1`, `0.05` | Slippage in premium units; also used for paper fills. |
 | `OPT_STT_SELL_RATE_NSE`, `OPT_STT_SELL_RATE_MCX` | `0.0015`, `0.0005` | STT on sell-side option premium. |

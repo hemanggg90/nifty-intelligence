@@ -35,7 +35,7 @@ from quant_intelligence.options.premium_model import PremiumSizingError, transla
 from quant_intelligence.research.pipeline import PipelineOutput
 from quant_intelligence.execution.capital import capital_required, capital_summary
 from quant_intelligence.ranking.ranking_engine import TIE_BREAK_TAG, tradable
-from quant_intelligence.risk.risk_engine import AccountState, ProposedTrade, evaluate_trade
+from quant_intelligence.risk.risk_engine import AccountState, ProposedTrade, evaluate_trade, risk_multiplier
 from quant_intelligence.strategies.registry import CHAIN_AWARE_STRATEGY_NAMES, get_strategy
 
 
@@ -61,11 +61,14 @@ def size_position(
     the final `quantity` is rounded down to a whole number of lots. The result is then capped so
     entry_price x quantity never exceeds `max_capital_per_trade_pct` of equity: a tight stop makes
     the risk-based quantity huge (e.g. 8 lots of natural gas), which the risk budget alone allows.
+    The budget is scaled by `risk_multiplier` (drawdown / daily loss / losing streak), exactly as the
+    risk engine's check is, so size shrinks in a bad stretch.
     """
     stop_distance = abs(entry_price - stop_price)
     if stop_distance <= 0 or account.equity <= 0:
         return 0
-    budget = account.equity * (SETTINGS.risk.max_risk_per_trade_pct * 0.9) / 100.0
+    multiplier, _ = risk_multiplier(account)
+    budget = account.equity * (SETTINGS.risk.max_risk_per_trade_pct * 0.9 * multiplier) / 100.0
     raw_qty = budget / stop_distance
     lots = max(int(raw_qty // lot_size), 0)
     cap_pct = SETTINGS.risk.max_capital_per_trade_pct
@@ -75,6 +78,13 @@ def size_position(
     if size_factor < 1.0 and lots > 0:
         lots = max(1, int(lots * size_factor))  # a tie-break trade is sized down, but never to zero lots
     return lots * lot_size
+
+
+def _zero_size_reason(account: AccountState) -> str:
+    multiplier, why = risk_multiplier(account)
+    if multiplier < 1:
+        return f"Position sizing produced zero quantity: risk budget reduced to {multiplier:.0%} ({why}) is smaller than one lot."
+    return "Position sizing produced zero quantity (equity too small, stop too wide, or one lot exceeds the per-trade capital cap)."
 
 
 def chain_needed(output: PipelineOutput, underlying: str, broker: PaperBroker) -> bool:
@@ -182,7 +192,7 @@ def run_auto_option_cycle(
 
     quantity = size_position(account, premium_setup.entry_price, premium_setup.stop_price, contract.lot_size, size_factor)
     if quantity <= 0:
-        result.reason = "Position sizing produced zero quantity (equity too small, stop too wide, or one lot exceeds the per-trade capital cap)."
+        result.reason = _zero_size_reason(account)
         return result
 
     result.capital_required = capital_required(premium_setup.entry_price, quantity)
@@ -204,6 +214,7 @@ def run_auto_option_cycle(
         quantity=quantity,
         relative_volume=output.market_state.get("relative_volume"),
         data_quality_status=output.data_quality_status,
+        instrument=underlying,
     )
     decision = evaluate_trade(account, proposed)
     result.risk_decision_id = decision.decision_id
@@ -276,7 +287,7 @@ def run_auto_equity_cycle(output: PipelineOutput, broker: PaperBroker, account: 
     setup = setup_status.setup
     quantity = size_position(account, setup.entry_price, setup.stop_price)
     if quantity <= 0:
-        result.reason = "Position sizing produced zero quantity (equity too small, stop too wide, or one lot exceeds the per-trade capital cap)."
+        result.reason = _zero_size_reason(account)
         return result
 
     proposed = ProposedTrade(
@@ -288,6 +299,7 @@ def run_auto_equity_cycle(output: PipelineOutput, broker: PaperBroker, account: 
         quantity=quantity,
         relative_volume=output.market_state.get("relative_volume"),
         data_quality_status=output.data_quality_status,
+        instrument=instrument,
     )
     decision = evaluate_trade(account, proposed)
     result.risk_decision_id = decision.decision_id

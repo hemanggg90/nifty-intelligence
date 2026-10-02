@@ -131,7 +131,9 @@ def test_restore_rebuilds_todays_book_and_marks_older_open_rows_stale():
     open_ids = {p["position_id"] for p in eng.broker.get_open_positions()}
     assert open_ids == {"TODAY-OPEN"}  # reloaded, so stops/targets and square-off see it again
     assert eng.trades_today == 3 and eng.daily_pnl == 380.0  # daily limits survive a restart
-    assert eng.broker.cash == eng.broker.capital + 380.0  # yesterday's P&L is not carried over
+    # Cash carries ALL realised P&L (yesterday's too), so drawdown is measured across days after a restart.
+    assert eng.broker.cash == eng.broker.capital + 9999.0 + 380.0
+    assert eng.peak_equity >= eng.broker.cash
     with get_session() as s:
         old = s.query(Position).filter_by(position_id="OLD-OPEN").one()
         assert old.status == "STALE" and old.exit_reason == "STALE_ON_RESTART"  # kept, never deleted

@@ -15,11 +15,12 @@ may call `st.*`.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import threading
 
 from quant_intelligence.brokers.dhan_api_client import DhanApiClient
 from quant_intelligence.brokers.paper_broker import PaperBroker
-from quant_intelligence.config.settings import SETTINGS
+from quant_intelligence.config.settings import DATA_CACHE_DIR, SETTINGS
 from quant_intelligence.execution.multi_cycle import run_multi_instrument_cycle
 from quant_intelligence.execution.square_off import in_close_window, square_off_positions
 from quant_intelligence.risk.risk_engine import AccountState
@@ -161,8 +162,9 @@ class TradingEngine(ScanRunner):
         self.lock = threading.RLock()
         self.kill_switch = False
         self.trades_today = 0
-        self.daily_pnl = 0.0
-        self.peak_equity = SETTINGS.paper_starting_capital
+        self.daily_pnl = 0.0  # realised today
+        self.day_peak_pnl = 0.0  # highest marked-to-market daily P&L today (profit giveback lock)
+        self.peak_equity = SETTINGS.paper_starting_capital  # carried across days (drawdown is multi-day)
         self._day = today_ist()
         self._restored = False
 
@@ -172,9 +174,11 @@ class TradingEngine(ScanRunner):
 
         The broker lives in memory, so a restart used to empty it while the database kept the rows
         as OPEN - positions nobody monitored, and daily loss / trade-count limits that silently reset.
-        Today's positions are reloaded; cash is starting capital + today's realised P&L, and the
-        daily counters are restored. OPEN rows from an earlier day can never be priced or closed
-        properly, so they are marked STALE (kept, never deleted) rather than left looking live.
+        Today's positions are reloaded and the daily counters restored. Cash is starting capital + ALL
+        realised P&L to date, and the drawdown peak is the high-water mark of that realised equity curve
+        (since the last manual peak reset), so a losing week still counts toward MAX_DRAWDOWN_PCT after a
+        restart. OPEN rows from an earlier day can never be priced or closed properly, so they are
+        marked STALE (kept, never deleted) rather than left looking live.
         """
         with self.lock:
             if self._restored:
@@ -199,15 +203,21 @@ class TradingEngine(ScanRunner):
                         {c: getattr(r, c) for c in cols}
                         for r in session.query(Position).filter(Position.opened_at >= day_start).all()
                     ]
-                realised = 0.0
+                    closed_history = [
+                        (r.closed_at, r.net_pnl)
+                        for r in session.query(Position)
+                        .filter(Position.status == "CLOSED", Position.net_pnl.isnot(None))
+                        .order_by(Position.closed_at)
+                        .all()
+                    ]
+                realised_today = 0.0
                 for d in today_rows:
                     self.broker.positions[d["position_id"]] = d
                     if d["status"] == "CLOSED" and d.get("net_pnl") is not None:
-                        realised += d["net_pnl"]
+                        realised_today += d["net_pnl"]
                 self.trades_today = len(today_rows)
-                self.daily_pnl = realised
-                self.broker.cash = self.broker.capital + realised
-                self.peak_equity = max(self.peak_equity, self.broker.cash)
+                self.daily_pnl = realised_today
+                self.broker.cash, self.peak_equity = _equity_and_peak(self.broker.capital, closed_history, _load_peak_reset())
                 log_event(
                     "engine",
                     f"Restored {sum(1 for d in today_rows if d['status'] == 'OPEN')} open position(s) and "
@@ -224,7 +234,18 @@ class TradingEngine(ScanRunner):
             self._day = today
             self.trades_today = 0
             self.daily_pnl = 0.0
-            self.peak_equity = max(self.broker.cash, SETTINGS.paper_starting_capital)
+            self.day_peak_pnl = 0.0
+            # peak_equity is NOT reset: drawdown is measured across days.
+
+    def reset_drawdown_peak(self) -> float:
+        """Start a fresh drawdown peak at the current marked-to-market equity (manual, from Risk Control).
+        Persisted so a restart keeps it. Returns the new peak."""
+        with self.lock:
+            equity = self.broker.cash + _unrealised(self.broker.get_open_positions())
+            self.peak_equity = equity
+            _save_peak_reset(now_ist(), equity)
+            log_event("engine", f"Drawdown peak reset to {equity:,.0f}", level="WARNING")
+            return equity
 
     def add_trade(self, n: int = 1) -> None:
         with self.lock:
@@ -242,24 +263,89 @@ class TradingEngine(ScanRunner):
             open_positions = self.broker.get_open_positions()
             exposure_by_strategy: dict[str, float] = {}
             total_exposure = 0.0
+            open_summary = []
             for p in open_positions:
                 risk_amt = abs(p["entry_price"] - (p["stop_price"] or p["entry_price"])) * p["quantity"]
                 exposure_by_strategy[p["strategy_name"]] = exposure_by_strategy.get(p["strategy_name"], 0.0) + risk_amt
                 total_exposure += risk_amt
+                open_summary.append({"instrument": p.get("underlying") or p.get("instrument"),
+                                     "direction": p.get("direction"), "risk": risk_amt})
 
-            equity = self.broker.cash
+            # Mark to market: open losses count toward the daily-loss and drawdown limits before they close.
+            unrealised = _unrealised(open_positions)
+            equity = self.broker.cash + unrealised
+            daily_pnl = self.daily_pnl + unrealised
             self.peak_equity = max(self.peak_equity, equity)
+            self.day_peak_pnl = max(self.day_peak_pnl, daily_pnl)
+            today = today_ist()
+            closed_today = sorted(
+                (
+                    {"strategy": p.get("strategy_name"), "net_pnl": p.get("net_pnl"), "closed_at": p.get("closed_at")}
+                    for p in self.broker.positions.values()
+                    if p.get("status") == "CLOSED" and p.get("closed_at") is not None and p["closed_at"].date() == today
+                ),
+                key=lambda t: t["closed_at"],
+            )
             return AccountState(
                 equity=equity,
                 peak_equity=self.peak_equity,
-                daily_pnl=self.daily_pnl,
+                daily_pnl=daily_pnl,
                 open_positions_count=len(open_positions),
                 trades_today=self.trades_today,
                 exposure_by_strategy=exposure_by_strategy,
                 total_exposure=total_exposure,
                 broker_connected=self.broker.is_connected(),
                 kill_switch_engaged=self.kill_switch,
+                unrealised_pnl=unrealised,
+                open_positions=open_summary,
+                closed_today=closed_today,
+                day_peak_pnl=self.day_peak_pnl,
             )
+
+
+# ---- drawdown bookkeeping helpers --------------------------------------------------------------
+_PEAK_RESET_FILE = DATA_CACHE_DIR / "risk_peak_reset.json"
+
+
+def _unrealised(open_positions: list[dict]) -> float:
+    """Unrealised P&L from each position's last marked price (set by the position monitor). A position
+    with no price yet counts as 0. Sign follows the option transaction (BUY gains when premium rises)."""
+    total = 0.0
+    for p in open_positions:
+        last = p.get("last_price")
+        if last is None:
+            continue
+        sign = 1 if (p.get("transaction") or p.get("direction")) in ("LONG", "BUY") else -1
+        total += sign * (float(last) - p["entry_price"]) * p["quantity"]
+    return total
+
+
+def _equity_and_peak(capital: float, closed_history: list, peak_reset: dict | None) -> tuple[float, float]:
+    """Realised equity (capital + every closed trade's P&L) and its high-water mark. With a manual peak
+    reset, the mark starts from the equity at the reset and only later closes can raise it."""
+    equity = capital
+    reset_at = peak_reset["at"] if peak_reset else None
+    peak = peak_reset["equity"] if peak_reset else capital
+    for closed_at, pnl in closed_history:
+        equity += pnl or 0.0
+        if reset_at is None or (closed_at is not None and closed_at > reset_at):
+            peak = max(peak, equity)
+    return equity, max(peak, equity)
+
+
+def _load_peak_reset() -> dict | None:
+    try:
+        data = json.loads(_PEAK_RESET_FILE.read_text(encoding="utf-8"))
+        return {"at": dt.datetime.fromisoformat(data["at"]), "equity": float(data["equity"])}
+    except Exception:
+        return None
+
+
+def _save_peak_reset(at: dt.datetime, equity: float) -> None:
+    try:
+        _PEAK_RESET_FILE.write_text(json.dumps({"at": at.isoformat(), "equity": equity}), encoding="utf-8")
+    except Exception as e:
+        log_event("engine", f"Could not save the drawdown peak reset: {e}", level="WARNING")
 
 
 ENGINE = TradingEngine()

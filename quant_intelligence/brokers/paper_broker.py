@@ -166,12 +166,16 @@ class PaperBroker(BaseBroker):
             from quant_intelligence.database.db import get_session
             from quant_intelligence.database.models import Position
 
+            # Only real columns: in-memory extras (e.g. the monitor's `last_price`) would make Position(**...)
+            # raise, and that error is swallowed below - the position would silently never be saved.
+            columns = {c.name for c in Position.__table__.columns}
+            row = {k: v for k, v in pos.items() if k in columns}
             with get_session() as session:
                 existing = session.query(Position).filter_by(position_id=pos["position_id"]).first()
                 if existing:
-                    for k, v in pos.items():
+                    for k, v in row.items():
                         setattr(existing, k, v)
                 else:
-                    session.add(Position(**pos))
+                    session.add(Position(**row))
         except Exception:
             pass

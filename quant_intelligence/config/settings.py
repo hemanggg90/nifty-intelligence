@@ -55,6 +55,29 @@ class RiskLimits:
     max_trades_per_day: int = _int_env("MAX_TRADES_PER_DAY", 6)
     max_drawdown_pct: float = _float_env("MAX_DRAWDOWN_PCT", 8.0)
 
+    # Drawdown control (see risk_engine.risk_multiplier and evaluate_trade). A count/percentage of 0
+    # disables that check.
+    # Size throttle: full size below DD_THROTTLE_START_PCT drawdown, shrinking linearly to
+    # DD_THROTTLE_FLOOR x size at MAX_DRAWDOWN_PCT (where the hard veto takes over).
+    dd_throttle_start_pct: float = _float_env("DD_THROTTLE_START_PCT", 3.0)
+    dd_throttle_floor: float = _float_env("DD_THROTTLE_FLOOR", 0.25)
+    # Half size after this many consecutive losing trades today, or once half the daily loss limit is gone.
+    loss_streak_throttle_after: int = _int_env("LOSS_STREAK_THROTTLE_AFTER", 2)
+    max_open_positions: int = _int_env("MAX_OPEN_POSITIONS", 4)
+    # Correlated instruments (config/risk_groups.py): at most this many same-direction positions per
+    # group, and at most this much open risk per group as % of equity.
+    max_group_positions: int = _int_env("MAX_GROUP_POSITIONS", 2)
+    max_group_risk_pct: float = _float_env("MAX_GROUP_RISK_PCT", 2.0)
+    # After this many consecutive losers today, no new entries for LOSS_STREAK_PAUSE_MIN minutes.
+    loss_streak_pause: int = _int_env("LOSS_STREAK_PAUSE", 3)
+    loss_streak_pause_min: int = _int_env("LOSS_STREAK_PAUSE_MIN", 60)
+    # A strategy that has lost this many trades today is done for the day.
+    strategy_max_losses_per_day: int = _int_env("STRATEGY_MAX_LOSSES_PER_DAY", 2)
+    # Once the day's P&L has reached PROFIT_LOCK_TRIGGER_PCT of equity, stop opening trades if it gives
+    # back PROFIT_LOCK_GIVEBACK (fraction) of that day's peak.
+    profit_lock_trigger_pct: float = _float_env("PROFIT_LOCK_TRIGGER_PCT", 1.5)
+    profit_lock_giveback: float = _float_env("PROFIT_LOCK_GIVEBACK", 0.5)
+
 
 @dataclass(frozen=True)
 class CostAssumptions:
