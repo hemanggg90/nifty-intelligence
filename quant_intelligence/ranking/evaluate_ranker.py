@@ -198,6 +198,9 @@ def main() -> None:
     global ALLOW_TIE_BREAK
     ALLOW_TIE_BREAK = args.tie_break
 
+    from quant_intelligence.config.settings import SETTINGS as _S
+
+    print("flags: tie_break=%s vol_premium_model=%s" % (ALLOW_TIE_BREAK, _S.vol_premium_model_in_backtest))
     report, _ = evaluate_symbols(symbols, max_points=args.max_points)
     for sym, r in report["per_symbol"].items():
         print(f"{sym:11}", {k: (round(v, 3) if isinstance(v, float) else v) for k, v in r.items() if not k.endswith("ci95")})

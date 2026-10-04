@@ -11,6 +11,9 @@ import tempfile
 # writing rows into the real dashboard database.
 os.environ["LOGS_DIR"] = tempfile.mkdtemp(prefix="qi_test_logs_")  # tests must not write into the real logs/
 os.environ["OPTION_UNDERLYINGS"] = "NIFTY,BANKNIFTY,FINNIFTY,MIDCPNIFTY,SENSEX"  # not whatever the developer put in .env
+for _flag in ("VOL_MODELS_ENABLED", "VOL_FEATURES_IN_ANALOGUES", "VOL_PREMIUM_MODEL_IN_BACKTEST", "VOL_TARGET_SIZING",
+              "VOL_RISK_CHECK", "VOL_IV_GATE"):
+    os.environ[_flag] = "false"  # a developer's .env must not change test results
 os.environ["TOKEN_KEEPER"] = "false"  # tests must never renew/replace tokens or call Dhan auth
 os.environ["DATA_KEEPER"] = "false"  # the real background thread must never start (or call Dhan) during tests
 os.environ["DATABASE_URL"] = "sqlite:///" + (Path(tempfile.mkdtemp(prefix="qi_test_db_")) / "test.db").as_posix()

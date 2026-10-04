@@ -173,6 +173,18 @@ class Settings:
     data_keeper_enabled: bool = _bool_env("DATA_KEEPER", True)
     data_keeper_interval_sec: int = _int_env("DATA_KEEPER_INTERVAL_SEC", 60)
 
+    # Volatility layer (quant_intelligence/volatility/). Every behaviour change is OFF by default; the pure
+    # computation modules (estimators, Black-Scholes) are always importable.
+    vol_models_enabled: bool = _bool_env("VOL_MODELS_ENABLED", False)
+    vol_features_in_analogues: bool = _bool_env("VOL_FEATURES_IN_ANALOGUES", False)
+    vol_premium_model_in_backtest: bool = _bool_env("VOL_PREMIUM_MODEL_IN_BACKTEST", False)
+    vol_target_sizing: bool = _bool_env("VOL_TARGET_SIZING", False)
+    vol_risk_check: bool = _bool_env("VOL_RISK_CHECK", False)
+    vol_iv_gate: bool = _bool_env("VOL_IV_GATE", False)
+    risk_free_rate: float = _float_env("RISK_FREE_RATE", 0.065)  # continuous, annual; India ~6-7%
+    dividend_yield: float = _float_env("DIVIDEND_YIELD", 0.012)  # index/stock carry; MCX uses q = r
+    trading_days_per_year: int = _int_env("TRADING_DAYS_PER_YEAR", 252)
+
     # Token keeper (brokers/dhan_auth.py): renews the 24h Dhan token before it expires. Renewing needs nothing
     # extra; DHAN_PIN + DHAN_TOTP_SECRET (treat like passwords: Secrets/.env only, never git) let it also
     # generate a brand-new token when the old one has already expired.

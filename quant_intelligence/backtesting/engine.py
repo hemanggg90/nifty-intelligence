@@ -65,8 +65,14 @@ def _apply_costs(
     """
     c = SETTINGS.costs
     delta = c.assumed_option_delta
-    entry_premium = max(c.assumed_option_premium_pct / 100.0 * entry_price, MIN_PREMIUM)
-    exit_premium = max(entry_premium + delta * trade.gross_pnl, MIN_PREMIUM)
+    model = (trade.setup.meta or {}).get("bs_premium")  # set by run_backtest when VOL_PREMIUM_MODEL_IN_BACKTEST
+    if model:
+        entry_premium, exit_premium = model["entry"], model["exit"]
+        option_pnl_per_unit = exit_premium - entry_premium
+    else:
+        entry_premium = max(c.assumed_option_premium_pct / 100.0 * entry_price, MIN_PREMIUM)
+        exit_premium = max(entry_premium + delta * trade.gross_pnl, MIN_PREMIUM)
+        option_pnl_per_unit = delta * trade.gross_pnl
     buy_turnover = entry_premium * quantity
     sell_turnover = exit_premium * quantity
     turnover = buy_turnover + sell_turnover
@@ -83,7 +89,7 @@ def _apply_costs(
     commissions = brokerage
     fees = stt + txn + sebi + stamp + gst
     slippage_amount = c.slippage_ticks * c.tick_size * quantity * 2  # entry + exit
-    net_pnl = delta * trade.gross_pnl * quantity - commissions - fees - slippage_amount
+    net_pnl = option_pnl_per_unit * quantity - commissions - fees - slippage_amount
     return commissions, fees, slippage_amount, net_pnl
 
 
@@ -91,7 +97,11 @@ def net_r_multiple(trade: TradeResult, quantity: int, market: str = "NSE") -> fl
     """Net-of-cost R: option P&L after all costs / amount risked (delta x stop distance x quantity).
     This, not the gross `TradeResult.r_multiple`, is what a strategy actually earns."""
     net_pnl = _apply_costs(trade, trade.setup.entry_price, quantity, market)[3]
-    risk = SETTINGS.costs.assumed_option_delta * abs(trade.setup.entry_price - trade.setup.stop_price) * quantity
+    model = (trade.setup.meta or {}).get("bs_premium")
+    if model:
+        risk = model["risk"] * quantity  # premium lost if the underlying reaches the stop
+    else:
+        risk = SETTINGS.costs.assumed_option_delta * abs(trade.setup.entry_price - trade.setup.stop_price) * quantity
     return net_pnl / risk if risk > 0 else 0.0
 
 
@@ -121,6 +131,7 @@ def run_backtest(
 
     trades: list[TradeResult] = []
     next_available_idx = 0
+    premium_model = _premium_model(ohlcv, instrument)
 
     for setup in setups:
         entry_idx = ts_to_idx.get(setup.timestamp)
@@ -128,6 +139,10 @@ def run_backtest(
             continue  # skip overlapping setups while a trade would still be open
 
         result = strategy.simulate_trade(setup, ohlcv, entry_idx, max_holding_bars=max_holding_bars)
+        if premium_model is not None:
+            priced = premium_model.price(result)
+            if priced:
+                result.setup.meta = {**(result.setup.meta or {}), "bs_premium": priced}
         trades.append(result)
 
         exit_idx = ts_to_idx.get(result.exit_timestamp, entry_idx + max_holding_bars)
@@ -140,6 +155,22 @@ def run_backtest(
     if persist:
         _persist_backtest(run, strategy, ohlcv, features, feat_by_ts, quantity, market)
     return run
+
+
+def _premium_model(ohlcv: pd.DataFrame, instrument: str):
+    """Black-Scholes premium model when VOL_PREMIUM_MODEL_IN_BACKTEST is on; None otherwise or if it cannot be
+    built (never raises into the backtest - the fixed assumption is the fallback)."""
+    if not SETTINGS.vol_premium_model_in_backtest or len(ohlcv) == 0:
+        return None
+    try:
+        from quant_intelligence.options.backtest_premium import BacktestPremiumModel
+
+        return BacktestPremiumModel(ohlcv, instrument)
+    except Exception as e:
+        from quant_intelligence.utils.logging_utils import log_event
+
+        log_event("backtest", f"Premium model unavailable for {instrument}, using the fixed assumption: {e}", level="WARNING")
+        return None
 
 
 def _compute_run_metrics(trades: list[TradeResult], quantity: int, market: str = "NSE") -> dict:
