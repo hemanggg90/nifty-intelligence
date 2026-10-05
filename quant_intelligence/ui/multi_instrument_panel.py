@@ -60,6 +60,9 @@ def _live_header(runner: ScanRunner, market: str, symbols: list[str]) -> None:
     status = runner.status()
     feed = DATA_KEEPER.status()
     stale_here = [s for s in feed["not_ok"] if s in symbols]
+    if feed["paused"]:
+        st.warning(f"Candles are not being refreshed: {feed['error']}")
+        stale_here = []  # the banner above already says why; do not repeat it per instrument
     if stale_here:
         issues = [i for sym in stale_here for i in DATA_KEEPER.instruments[sym]["issues"]]
         reason = next((i for i in issues if "refresh failed" in i), issues[0] if issues else None)

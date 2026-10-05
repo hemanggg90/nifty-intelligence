@@ -97,7 +97,9 @@ def run_pipeline(
 
     feat_by_ts = features.set_index("timestamp")
     for strategy in strategies:
-        backtest = run_backtest(strategy, ohlcv, features, instrument, split="RESEARCH", quantity=quantity)
+        # persist=False: this runs on every scan/page refresh. Persisting wrote ~700k rows (1.6 GB) and nothing reads
+        # them back; the Backtest Lab page still persists its explicit runs.
+        backtest = run_backtest(strategy, ohlcv, features, instrument, split="RESEARCH", quantity=quantity, persist=False)
         assessment = assess_strategy(
             strategy.name, backtest.trades, feat_by_ts, market_state.features, quantity,
             metrics=backtest.metrics, market=market,

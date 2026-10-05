@@ -17,6 +17,7 @@ backed every decision.
 from __future__ import annotations
 
 import datetime as dt
+import os
 import threading
 import time
 from pathlib import Path
@@ -26,7 +27,6 @@ import pandas as pd
 from quant_intelligence.config.settings import DATA_CACHE_DIR
 from quant_intelligence.data_adapters.csv_adapter import CSVAdapter
 from quant_intelligence.data_adapters.dhan_adapter import DhanAdapter
-from quant_intelligence.data_adapters.synthetic import _parse_timeframe_minutes
 from quant_intelligence.data.quality import (
     MAX_OUT_OF_SESSION_FRACTION,
     QUALITY_FAIL,
@@ -37,6 +37,7 @@ from quant_intelligence.data.quality import (
 from quant_intelligence.utils.logging_utils import log_event
 from quant_intelligence.utils.market_calendar import expected_last_closed_bar_start, most_recent_expected_bar_time
 from quant_intelligence.utils.market_profile import profile_for
+from quant_intelligence.utils.timeframe import parse_timeframe_minutes as _parse_timeframe_minutes
 
 CACHE_DIR = Path(DATA_CACHE_DIR) / "parquet_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -53,6 +54,39 @@ MAX_TAIL_GAP_DAYS = 30
 _last_attempt: dict[tuple[str, str], float] = {}
 _last_refresh_error: dict[tuple[str, str], str] = {}  # why the latest refresh of an instrument failed
 _attempt_lock = threading.Lock()
+
+# One request-or-read-modify-write at a time per instrument: the background keeper and the pages share the same
+# parquet files, so without this two callers fetch the same instrument twice (the second would find a fresh
+# cache and make no request) and a reader can meet a half-written file.
+_flights: dict[tuple[str, str], threading.RLock] = {}
+_flights_guard = threading.Lock()
+
+
+def _flight_lock(instrument: str, timeframe: str) -> threading.RLock:
+    with _flights_guard:
+        return _flights.setdefault((instrument, timeframe), threading.RLock())
+
+
+def _write_cache(df: pd.DataFrame, path: Path) -> None:
+    """Atomic: write beside the target, then rename over it, so a reader never sees a partial file."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        df.to_parquet(tmp, index=False)
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+
+
+def _read_cache(path: Path) -> pd.DataFrame | None:
+    """The cached candles, or None if the file is unreadable (then it is simply fetched again)."""
+    try:
+        cached = pd.read_parquet(path)
+        cached["timestamp"] = pd.to_datetime(cached["timestamp"])
+        return cached
+    except Exception as e:
+        log_event("data_manager", f"Cache file {path.name} is unreadable, fetching it again: {e}", level="WARNING")
+        return None
 
 
 class DataUnavailableError(RuntimeError):
@@ -78,6 +112,19 @@ class DataManager:
         prefer_source: str | None = None,
         quiet: bool = False,
     ) -> tuple[pd.DataFrame, dict]:
+        with _flight_lock(instrument, timeframe):  # a second caller waits, then finds the fresh cache
+            return self._get_ohlcv(instrument, timeframe, start, end, force_refresh, prefer_source, quiet)
+
+    def _get_ohlcv(
+        self,
+        instrument: str,
+        timeframe: str,
+        start: dt.datetime,
+        end: dt.datetime,
+        force_refresh: bool = False,
+        prefer_source: str | None = None,
+        quiet: bool = False,
+    ) -> tuple[pd.DataFrame, dict]:
         """Return (dataframe, metadata_dict). metadata includes source + quality report.
 
         `quiet=True` (used by the background data keeper) skips the per-call metadata row and INFO log when the
@@ -85,9 +132,8 @@ class DataManager:
         self._quiet = quiet
         cache_path = self._cache_path(instrument, timeframe)
 
-        if not force_refresh and cache_path.exists():
-            cached = pd.read_parquet(cache_path)
-            cached["timestamp"] = pd.to_datetime(cached["timestamp"])
+        cached = None if force_refresh or not cache_path.exists() else _read_cache(cache_path)
+        if cached is not None:
             in_range = cached[(cached["timestamp"] >= start) & (cached["timestamp"] <= end)]
             if len(in_range) > 0:
                 tf_minutes = _parse_timeframe_minutes(timeframe)
@@ -106,7 +152,7 @@ class DataManager:
                     merged = self._refresh_tail(instrument, timeframe, cached, last_cached, tf_minutes, end, prefer_source)
                     if merged is not None:
                         _last_refresh_error.pop((instrument, timeframe), None)
-                        merged.to_parquet(cache_path, index=False)
+                        _write_cache(merged, cache_path)
                         in_range = merged[(merged["timestamp"] >= start) & (merged["timestamp"] <= end)]
                         return self._finalize(in_range, instrument, timeframe, "cache+tail")
                     # Refresh failed (rate limit, network): serve what we have. The quality gate flags it
@@ -128,7 +174,7 @@ class DataManager:
                 f"No real market data for {instrument} {timeframe}: {reasons}. "
                 "Set your Dhan credentials in the sidebar or add CSV files to data_cache/csv."
             )
-        df.to_parquet(cache_path, index=False)
+        _write_cache(df, cache_path)
         return self._finalize(df, instrument, timeframe, source)
 
     def _may_request(self, instrument: str, timeframe: str) -> bool:

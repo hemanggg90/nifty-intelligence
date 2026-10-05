@@ -13,6 +13,7 @@ import pandas as pd
 from quant_intelligence.execution.charges import option_trade_charges
 from quant_intelligence.ui.format import contract_label
 from quant_intelligence.utils.market_profile import profile_for
+from quant_intelligence.utils.timeutil import now_ist
 
 _COLUMNS = [
     "position_id", "instrument", "strategy", "contract", "side", "option_type", "strike", "expiry", "qty",
@@ -49,7 +50,7 @@ def positions_frame(rows: Iterable, now: dt.datetime | None = None) -> pd.DataFr
         charges = None
         if status == "CLOSED" and entry and exit_price is not None:
             charges = option_trade_charges(entry, exit_price, qty, side, market).total
-        end = closed if closed is not None else (now or dt.datetime.now())
+        end = closed if closed is not None else (now or now_ist())  # positions are stamped in IST
         records.append(
             {
                 "position_id": _get(r, "position_id"),

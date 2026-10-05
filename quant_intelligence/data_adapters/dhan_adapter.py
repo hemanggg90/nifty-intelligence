@@ -20,7 +20,7 @@ from quant_intelligence.brokers.dhan_api_client import DhanApiClient, DhanApiErr
 from quant_intelligence.config.settings import SETTINGS
 from quant_intelligence.data_adapters import dhan_instrument_master
 from quant_intelligence.data_adapters.base import DataAdapter, OHLCV_COLUMNS
-from quant_intelligence.data_adapters.synthetic import _parse_timeframe_minutes
+from quant_intelligence.utils.timeframe import parse_timeframe_minutes as _parse_timeframe_minutes
 from quant_intelligence.options.option_selector import UNDERLYING_REGISTRY as _INDEX_UNDERLYINGS
 from quant_intelligence.utils.market_profile import NSE, MarketProfile, profile_for
 

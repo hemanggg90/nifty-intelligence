@@ -218,7 +218,7 @@ request, spaced by the Dhan rate limiter. Status is in the top status bar ("Data
 banner on the NSE/MCX panels naming the reason, and a table with a **Refresh candles now** button on the
 *System Logs & Health* page. Pages also recompute their cached analysis when the credentials change, when the
 last result was not OK for a minute, or when a new bar has closed - saving a new token clears stale results
-immediately. Disable with `DATA_KEEPER=false`.
+immediately. Candle files are written atomically and per instrument one fetch runs at a time, so the keeper and the pages never corrupt or duplicate each other's downloads. Disable with `DATA_KEEPER=false`.
 
 ### Token lifecycle (token keeper)
 
@@ -573,6 +573,8 @@ temporary database and log directory and never write to your real ones, nor star
 | Chain error for one instrument | Check `logs/system.log`; usually rate limit or an expired token. |
 | Data feed shows "N stale" | Read the reason on the *Health* page. Usually an expired Dhan token (see *Token lifecycle*), or a holiday not yet in `market_holidays.txt`. The keeper retries every minute and recovers by itself once the token is valid. |
 | NIFTY says NO TRADE "not distinguishable" | The top strategies are statistically tied. With `TIE_BREAK_PAPER` on the paper trader takes the top one (tagged TIE-BREAK, half size); with it off it stays out. |
+| Database is gigabytes / app is slow | Older versions saved a full backtest per strategy on every scan (~700k rows). Scans no longer do; remove the old rows with `python scripts/prune_research_tables.py` (dry run) then `--apply` (backs up first). Orders, positions and fills are never touched. |
+| Data feed says "paused - token expired" | The keeper stops sending requests while the token is expired/rejected (no log spam) and resumes by itself when you save a new one. |
 | Fake "Momentum" trades at premium ~100 in Positions | Left by early test runs. `python scripts/purge_test_trades.py` lists them (dry run); `--apply` backs up the DB then deletes them. |
 | Trades missing after a restart | Paper state is in memory; today's book is restored from the database, older open rows are marked `STALE`. |
 | Times look 5.5 h off | Server clock is UTC; the app uses IST internally - restart on the latest version. |

@@ -119,10 +119,4 @@ class SyntheticAdapter(DataAdapter):
         return df.reset_index(drop=True)
 
 
-def _parse_timeframe_minutes(timeframe: str) -> int:
-    timeframe = timeframe.strip().lower()
-    if timeframe.endswith("min"):
-        return int(timeframe.replace("min", ""))
-    if timeframe.endswith("d"):
-        return 375  # full session as one bar - not used in this MVP, but handled gracefully
-    raise ValueError(f"Unsupported timeframe: {timeframe}")
+from quant_intelligence.utils.timeframe import parse_timeframe_minutes as _parse_timeframe_minutes  # noqa: E402,F401

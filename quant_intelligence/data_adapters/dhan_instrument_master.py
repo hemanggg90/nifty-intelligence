@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import os
+import time
 
 import requests
 
 from quant_intelligence.config.settings import DATA_CACHE_DIR
 from quant_intelligence.utils.logging_utils import log_event
+from quant_intelligence.utils.timeutil import now_ist
 
 _SCRIP_MASTER_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
 _CACHE_FILE = DATA_CACHE_DIR / "dhan_scrip_master.csv"
@@ -32,6 +35,17 @@ _cache: dict[str, dict] | None = None
 _fno_cache: dict[str, dict] | None = None
 _mcx_cache: dict[str, dict] | None = None
 
+# The in-memory indexes are rebuilt once per IST day: a long-running server (Streamlit Cloud) must notice that a
+# futures contract expired or that NSE revised a lot size, without a restart. A failed download is retried after
+# a short pause rather than being remembered forever as "nothing is listed".
+_built_day: dict[str, dt.date] = {}
+_RETRY_AFTER_FAILURE_SEC = 300.0
+_retry_download_at = 0.0  # time.monotonic()
+
+
+def _fresh(name: str, cached) -> bool:
+    return cached is not None and _built_day.get(name, now_ist().date()) == now_ist().date()
+
 
 def _cache_is_fresh() -> bool:
     if not _CACHE_FILE.exists():
@@ -43,7 +57,11 @@ def _cache_is_fresh() -> bool:
 def _download_scrip_master() -> None:
     resp = requests.get(_SCRIP_MASTER_URL, timeout=30)
     resp.raise_for_status()
-    _CACHE_FILE.write_bytes(resp.content)
+    if len(resp.content) < 1000:
+        raise RuntimeError("scrip master download is too small to be real")
+    tmp = _CACHE_FILE.with_name(_CACHE_FILE.name + ".tmp")
+    tmp.write_bytes(resp.content)
+    os.replace(tmp, _CACHE_FILE)  # atomic: a reader never sees a half-written file
 
 
 def _ensure_scrip_master() -> bool:
@@ -51,23 +69,24 @@ def _ensure_scrip_master() -> bool:
 
     Returns True if a usable CSV is on disk afterwards, False otherwise.
     """
-    if not _cache_is_fresh():
+    global _retry_download_at
+    if not _cache_is_fresh() and time.monotonic() >= _retry_download_at:
         try:
             _download_scrip_master()
         except Exception as e:
-            log_event("dhan_instrument_master", f"Scrip-master download failed: {e}", level="WARNING")
-            return _CACHE_FILE.exists()
-    return True
+            _retry_download_at = time.monotonic() + _RETRY_AFTER_FAILURE_SEC
+            log_event("dhan_instrument_master", f"Scrip-master download failed (retrying in "
+                      f"{_RETRY_AFTER_FAILURE_SEC / 60:.0f} min): {e}", level="WARNING")
+    return _CACHE_FILE.exists()
 
 
 def _load_index() -> dict[str, dict]:
     global _cache
-    if _cache is not None:
+    if _fresh("eq", _cache):
         return _cache
 
     if not _ensure_scrip_master():
-        _cache = {}
-        return _cache
+        return {}  # not remembered: the next call retries once the backoff has passed
 
     index: dict[str, dict] = {}
     with open(_CACHE_FILE, newline="", encoding="utf-8", errors="replace") as f:
@@ -85,6 +104,7 @@ def _load_index() -> dict[str, dict]:
                 "exchange_segment": "NSE_EQ",
             }
     _cache = index
+    _built_day["eq"] = now_ist().date()
     return _cache
 
 
@@ -109,12 +129,11 @@ def _load_fno_index() -> dict[str, dict]:
     rather than hardcoded - a stale lot size would misprice live risk).
     """
     global _fno_cache
-    if _fno_cache is not None:
+    if _fresh("fno", _fno_cache):
         return _fno_cache
 
     if not _ensure_scrip_master():
-        _fno_cache = {}
-        return _fno_cache
+        return {}
 
     by_symbol: dict[str, dict] = {}
     with open(_CACHE_FILE, newline="", encoding="utf-8", errors="replace") as f:
@@ -151,6 +170,7 @@ def _load_fno_index() -> dict[str, dict]:
         index[symbol] = {"lot_size": entry["lot_size"], "strike_step": strike_step, "is_stock": entry["is_stock"]}
 
     _fno_cache = index
+    _built_day["fno"] = now_ist().date()
     return _fno_cache
 
 
@@ -209,14 +229,13 @@ def _load_mcx_index() -> dict[str, dict]:
     nearest option expiry, as for NSE underlyings.
     """
     global _mcx_cache
-    if _mcx_cache is not None:
+    if _fresh("mcx", _mcx_cache):
         return _mcx_cache
 
     if not _ensure_scrip_master():
-        _mcx_cache = {}
-        return _mcx_cache
+        return {}
 
-    today = dt.date.today()
+    today = now_ist().date()  # IST, not the server's (UTC) date; the index is rebuilt daily so expired futures roll off
     futures: dict[str, list[tuple[dt.date, str]]] = {}
     option_strikes: dict[str, dict[dt.date, set[float]]] = {}
     with open(_CACHE_FILE, newline="", encoding="utf-8", errors="replace") as f:
@@ -251,6 +270,7 @@ def _load_mcx_index() -> dict[str, dict]:
             "has_options": bool(by_expiry),
         }
     _mcx_cache = index
+    _built_day["mcx"] = now_ist().date()
     return _mcx_cache
 
 

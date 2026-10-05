@@ -44,6 +44,7 @@ class DataKeeper:
         self.rounds = 0
         self.last_round_at: dt.datetime | None = None
         self.last_error: str | None = None
+        self.paused = False  # True while the token is unusable: no requests are sent until a valid one appears
         self.instruments: dict[str, dict] = {}  # symbol -> {"last_bar", "quality", "issues", "checked_at"}
 
     # ---- lifecycle -------------------------------------------------------------
@@ -86,9 +87,41 @@ class DataKeeper:
             self._wake.clear()
 
     # ---- one round --------------------------------------------------------------
+    @staticmethod
+    def _token_problem() -> str | None:
+        """Why no Dhan request can succeed right now (expired / rejected token), or None.
+
+        A missing token is not a problem here: CSV files can still supply candles."""
+        from quant_intelligence.brokers.dhan_rate_limit import LIMITER
+        from quant_intelligence.config.credentials import token_status
+
+        token = SETTINGS.dhan_access_token
+        if not token:
+            return None
+        status = token_status(token)
+        if status["state"] == "expired":
+            return (f"Dhan access token expired {status['expires_at']:%d %b %H:%M} IST - "
+                    "enter a new token (or set DHAN_PIN/DHAN_TOTP_SECRET for automatic renewal)")
+        if LIMITER.auth_block_remaining(token) > 0:
+            return "Dhan rejected the access token (401) - enter a new token"
+        return None
+
     def run_once(self, symbols: list[str] | None = None) -> dict:
         """Refresh every instrument once. Returns {"refreshed": n, "stale": [...], "error": str | None}."""
         end = now_ist()
+        problem = self._token_problem()
+        if problem:
+            # Every call would fail the same way and log two warnings per instrument per minute. Say it once,
+            # send nothing, and carry on automatically when a valid token arrives (wake() fires on save).
+            if problem != self.last_error:
+                log_event("data_keeper", f"Data feed paused: {problem}", level="WARNING")
+            self.paused, self.last_error = True, problem
+            self.rounds += 1
+            self.last_round_at = end
+            return {"refreshed": 0, "stale": sorted(self.instruments), "error": problem, "paused": True}
+        if self.paused:
+            log_event("data_keeper", "Data feed resuming: a usable token is available", level="INFO")
+            self.paused = False
         start = end - dt.timedelta(days=LOOKBACK_DAYS)
         stale: list[str] = []
         first_error: str | None = None
@@ -131,6 +164,7 @@ class DataKeeper:
             "tracked": len(self.instruments),
             "ok": len(self.instruments) - len(bad),
             "not_ok": bad,
+            "paused": self.paused,
             "newest_bar": max(bars) if bars else None,
             "oldest_bar": min(bars) if bars else None,
             "error": self.last_error,

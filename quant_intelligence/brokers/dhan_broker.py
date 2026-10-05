@@ -29,9 +29,16 @@ class DhanBroker(BaseBroker):
     name = "dhan"
 
     def __init__(self):
-        self.client_id = SETTINGS.dhan_client_id
-        self.access_token = SETTINGS.dhan_access_token
-        self.client = DhanApiClient(self.client_id, self.access_token)
+        # Credentials are read live: a broker built before a token was saved/renewed must not keep the old ones.
+        self.client = DhanApiClient()
+
+    @property
+    def client_id(self) -> str:
+        return SETTINGS.dhan_client_id
+
+    @property
+    def access_token(self) -> str:
+        return SETTINGS.dhan_access_token
 
     def is_connected(self) -> bool:
         return bool(self.client_id and self.access_token)

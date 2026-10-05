@@ -90,6 +90,8 @@ def data_chip() -> str:
     ds = DATA_KEEPER.status()
     if not ds["running"] or ds["rounds"] == 0:
         return chip("Data feed: starting", "info")
+    if ds["paused"]:
+        return chip("Data feed: paused - token expired", "warning")
     if ds["not_ok"]:
         return chip(f"Data feed: {len(ds['not_ok'])} of {ds['tracked']} stale", "warning")
     newest = ds["newest_bar"]
