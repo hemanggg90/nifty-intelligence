@@ -217,3 +217,19 @@ def test_quiet_mode_writes_no_metadata_row_when_data_is_ok_but_still_reports_pro
     old_before = rows("QUIETOLD")
     _, bad = manager.get_ohlcv("QUIETOLD", "5min", start, end, quiet=True)
     assert bad["quality_status"] != "OK" and rows("QUIETOLD") == old_before + 1  # problems are always recorded
+
+
+# ---------------------------------------------------------------- credentials entered AFTER start-up
+def test_adapter_built_before_the_token_is_saved_picks_it_up_later(monkeypatch):
+    """The keeper's DataManager is created at import, before anyone enters a token. It used to snapshot the
+    empty credentials and report 'Dhan credentials not set' forever, even after the token was saved."""
+    from quant_intelligence.data_adapters import dhan_adapter
+
+    empty = dataclasses.replace(settings_module.SETTINGS, dhan_client_id="", dhan_access_token="")
+    monkeypatch.setattr(dhan_adapter, "SETTINGS", empty)
+    adapter = dhan_adapter.DhanAdapter()
+    assert adapter.is_available() is False
+
+    object.__setattr__(empty, "dhan_client_id", "1000000001")  # what update_dhan_credentials does
+    object.__setattr__(empty, "dhan_access_token", "a.b.c")
+    assert adapter.is_available() is True and adapter.client_id == "1000000001" and adapter.access_token == "a.b.c"

@@ -32,9 +32,17 @@ class DhanAdapter(DataAdapter):
     name = "dhan"
 
     def __init__(self):
-        self.client_id = SETTINGS.dhan_client_id
-        self.access_token = SETTINGS.dhan_access_token
-        self._client: DhanApiClient | None = None
+        self._client: DhanApiClient | None = None  # tests may inject one
+
+    # Read the credentials live: this adapter is built once at start-up (the data keeper's DataManager),
+    # usually BEFORE the token is entered, and a snapshot would stay "credentials not set" forever.
+    @property
+    def client_id(self) -> str:
+        return SETTINGS.dhan_client_id
+
+    @property
+    def access_token(self) -> str:
+        return SETTINGS.dhan_access_token
 
     def is_available(self) -> bool:
         return bool(self.client_id and self.access_token)
@@ -66,7 +74,7 @@ class DhanAdapter(DataAdapter):
                 "(supported: NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX, NSE equities and the MCX commodity watchlist)."
             )
 
-        client = self._client or DhanApiClient(self.client_id, self.access_token)
+        client = self._client or DhanApiClient()  # follows the live credentials (and token renewal)
         tf_minutes = _parse_timeframe_minutes(timeframe)
 
         try:
