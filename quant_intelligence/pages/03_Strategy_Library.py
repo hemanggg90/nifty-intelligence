@@ -5,6 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import streamlit as st
 
+from quant_intelligence.config.settings import SETTINGS
 from quant_intelligence.strategies.registry import get_all_strategies
 from quant_intelligence.ui.theme import apply_theme
 
@@ -14,6 +15,15 @@ st.caption("Every strategy implements the same standard interface: generate_hist
            "check_setup, generate_signal, calculate_entry_stop_target, simulate_trade.")
 
 strategies = get_all_strategies()
+
+if SETTINGS.stop_atr_scale != 1.0:
+    st.warning(
+        f"STOP_ATR_SCALE = {SETTINGS.stop_atr_scale:g}: every ATR-based strategy's default stop and target distance is "
+        f"multiplied by {SETTINGS.stop_atr_scale:g} (the parameters below already include it). Backtests, the ranking and live "
+        "setups all use these scaled values."
+    )
+else:
+    st.caption("Stop and target distances are as designed (STOP_ATR_SCALE = 1.0). Set STOP_ATR_SCALE below 1 to tighten them all.")
 
 for strategy in strategies:
     with st.expander(f"{strategy.name}", expanded=False):

@@ -43,13 +43,20 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+DEFAULT_MAX_RISK_PER_TRADE_PCT = 0.2  # was 1.0: ~Rs 8,000-9,000 lost per stopped trade on Rs 10 lakh
+DEFAULT_MAX_DAILY_LOSS_PCT = 1.5  # was 3.0
+
+
 @dataclass(frozen=True)
 class RiskLimits:
-    max_risk_per_trade_pct: float = _float_env("MAX_RISK_PER_TRADE_PCT", 1.0)
+    # What ONE stopped trade may cost, as % of equity. Sizing divides this budget by the stop distance, so it fixes
+    # the rupee loss of a stop-out whatever the stop width: 0.2% is Rs 2,000 on Rs 10 lakh (sizing uses 90% of it,
+    # about Rs 1,800). An instrument whose single lot already risks more than the budget does not trade.
+    max_risk_per_trade_pct: float = _float_env("MAX_RISK_PER_TRADE_PCT", DEFAULT_MAX_RISK_PER_TRADE_PCT)
     # Ceiling on the capital (premium x quantity) committed to ONE trade, as % of equity. Risk-based
     # sizing alone lets a tight stop produce a huge quantity; 0 disables the cap.
     max_capital_per_trade_pct: float = _float_env("MAX_CAPITAL_PER_TRADE_PCT", 5.0)
-    max_daily_loss_pct: float = _float_env("MAX_DAILY_LOSS_PCT", 3.0)
+    max_daily_loss_pct: float = _float_env("MAX_DAILY_LOSS_PCT", DEFAULT_MAX_DAILY_LOSS_PCT)
     max_strategy_exposure_pct: float = _float_env("MAX_STRATEGY_EXPOSURE_PCT", 10.0)
     max_portfolio_exposure_pct: float = _float_env("MAX_PORTFOLIO_EXPOSURE_PCT", 20.0)
     max_trades_per_day: int = _int_env("MAX_TRADES_PER_DAY", 6)
@@ -178,6 +185,11 @@ class Settings:
     eod_force_square_off: bool = _bool_env("EOD_FORCE_SQUARE_OFF", True)  # close paper positions still open after the close
     log_retention_days: int = _int_env("LOG_RETENTION_DAYS", 30)  # system_events / market_data_metadata
     decision_retention_days: int = _int_env("DECISION_RETENTION_DAYS", 90)  # scan_decisions
+
+    # Stop tightness: multiplies the DEFAULT stop_atr_mult and target_atr_mult of every ATR-based strategy (stop and
+    # target together, so reward:risk is unchanged). 1.0 = as designed; 0.5 = stops and targets half as far. Values
+    # given explicitly (Strategy Library / Backtest Lab) are never scaled. Clamped to 0.2-3.0.
+    stop_atr_scale: float = min(max(_float_env("STOP_ATR_SCALE", 1.0), 0.2), 3.0)
 
     # Volatility layer (quant_intelligence/volatility/). Every behaviour change is OFF by default; the pure
     # computation modules (estimators, Black-Scholes) are always importable.

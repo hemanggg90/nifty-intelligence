@@ -80,11 +80,30 @@ def size_position(
     return lots * lot_size
 
 
-def _zero_size_reason(account: AccountState) -> str:
+NO_SIZE_PREFIX = "NO SIZE:"  # recognised by the decision log (reports/decision_log.py)
+
+
+def risk_budget(account: AccountState) -> tuple[float, float, str]:
+    """(rupees one stopped trade may lose right now, the risk multiplier, why the multiplier is below 1)."""
     multiplier, why = risk_multiplier(account)
-    if multiplier < 1:
-        return f"Position sizing produced zero quantity: risk budget reduced to {multiplier:.0%} ({why}) is smaller than one lot."
-    return "Position sizing produced zero quantity (equity too small, stop too wide, or one lot exceeds the per-trade capital cap)."
+    return account.equity * (SETTINGS.risk.max_risk_per_trade_pct * 0.9 * multiplier) / 100.0, multiplier, why
+
+
+def _zero_size_reason(account: AccountState, entry_price: float | None = None, stop_price: float | None = None,
+                      lot_size: int = 1) -> str:
+    """Why the quantity came out zero - specific when the trade's prices are known."""
+    budget, multiplier, why = risk_budget(account)
+    cut = f" (budget cut to {multiplier:.0%}: {why})" if multiplier < 1 else ""
+    if entry_price is not None and stop_price is not None:
+        one_lot_risk = abs(entry_price - stop_price) * lot_size
+        if one_lot_risk > budget > 0:
+            return (f"{NO_SIZE_PREFIX} one lot ({lot_size}) would lose Rs {one_lot_risk:,.0f} at its stop, above the Rs {budget:,.0f} "
+                    f"allowed per trade{cut} - not traded (a tighter stop or a larger account would fit it).")
+        cap_pct = SETTINGS.risk.max_capital_per_trade_pct
+        if cap_pct > 0 and entry_price > 0 and entry_price * lot_size > account.equity * cap_pct / 100.0:
+            return (f"{NO_SIZE_PREFIX} one lot costs Rs {entry_price * lot_size:,.0f} in premium, above the per-trade capital cap "
+                    f"of Rs {account.equity * cap_pct / 100.0:,.0f} ({cap_pct:g}% of equity).")
+    return f"{NO_SIZE_PREFIX} position sizing produced zero quantity (budget Rs {budget:,.0f}{cut}; stop too wide for one lot, or equity too small)."
 
 
 def chain_needed(output: PipelineOutput, underlying: str, broker: PaperBroker) -> bool:
@@ -216,7 +235,8 @@ def _run_auto_option_cycle(
 
     quantity = size_position(account, premium_setup.entry_price, premium_setup.stop_price, contract.lot_size, size_factor)
     if quantity <= 0:
-        result.reason = _zero_size_reason(account)
+        result.reason = _zero_size_reason(account, premium_setup.entry_price, premium_setup.stop_price, contract.lot_size)
+        result.setup_status = result.setup_status or SETUP_TRIGGERED
         return result
 
     result.capital_required = capital_required(premium_setup.entry_price, quantity)
@@ -321,7 +341,7 @@ def _run_auto_equity_cycle(output: PipelineOutput, broker: PaperBroker, account:
     setup = setup_status.setup
     quantity = size_position(account, setup.entry_price, setup.stop_price)
     if quantity <= 0:
-        result.reason = _zero_size_reason(account)
+        result.reason = _zero_size_reason(account, setup.entry_price, setup.stop_price)
         return result
 
     proposed = ProposedTrade(

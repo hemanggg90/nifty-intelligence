@@ -58,6 +58,8 @@ def classify_cycle(output, result) -> dict:
         code = "FILLED" if status == "FILLED" else "ORDER_REJECTED"
     elif "RISK ENGINE VETO" in reason:
         status, code = "VETOED", _veto_class(reason)
+    elif reason.startswith("NO SIZE"):
+        status, code = "TRIGGERED", "NO_SIZE"  # a setup fired but one lot is above the per-trade loss budget
     elif result.setup_status == "CHAIN_ERROR":
         status, code = "CHAIN_ERROR", "CHAIN_ERROR"
     elif result.setup_status and "TRIGGERED" in str(result.setup_status):

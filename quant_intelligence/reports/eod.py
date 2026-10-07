@@ -89,7 +89,7 @@ def _load(report_date: dt.date, scope: str) -> dict:
             "positions": positions_frame(positions, now=now_ist()),
             "orders": [{"status": o.status, "reject_reason": o.reject_reason, "strategy": o.strategy_name} for o in orders],
             "decisions": [{"status": d.status, "reason_class": d.reason_class, "strategy": d.strategy, "tie_break": bool(d.tie_break),
-                           "reason": d.reason} for d in decisions],
+                           "reason": d.reason, "instrument": d.instrument} for d in decisions],
             "risk": [{"event_type": r.event_type, "reason": r.reason} for r in risk],
             "events": [{"component": e.component, "level": e.level, "message": e.message} for e in events],
         }
@@ -116,6 +116,8 @@ def _funnel(decisions: list[dict]) -> dict:
         "vetoed": by_status.get("VETOED", 0),
         "rejected": by_status.get("REJECTED", 0),
         "tie_break": sum(1 for d in decisions if d["tie_break"] and d["status"] != "NO_TRADE"),
+        "no_size": sum(1 for d in decisions if d["reason_class"] == "NO_SIZE"),
+        "no_size_instruments": sorted({d.get("instrument") for d in decisions if d["reason_class"] == "NO_SIZE" and d.get("instrument")}),
         "no_trade_reasons": _count_table([d["reason_class"] for d in decisions if d["status"] == "NO_TRADE"], "reason"),
         "veto_reasons": _count_table([d["reason_class"] for d in decisions if d["status"] == "VETOED"], "reason"),
         "by_strategy": sorted(strategies.values(), key=lambda r: -r["signals"]),
@@ -160,6 +162,11 @@ def _narrative(rep: dict) -> list[str]:
                        + f", {f['rejected']} rejected by the broker.")
         if f["tie_break"]:
             out.append(f"{f['tie_break']} decision(s) came from the tie-break rule (top strategies statistically tied).")
+        if f["no_size"]:
+            names = ", ".join(f["no_size_instruments"][:6])
+            out.append(f"{f['no_size']} setup(s) were skipped because one lot's stop-loss exceeds the per-trade loss budget "
+                       f"({names}{'...' if len(f['no_size_instruments']) > 6 else ''}). A tighter stop (STOP_ATR_SCALE) or a larger "
+                       "budget would let those instruments trade.")
     else:
         out.append("No scan decisions were recorded today - the auto-traders were probably not running (or the market was closed).")
     out.append(rep["leader"]["text"])

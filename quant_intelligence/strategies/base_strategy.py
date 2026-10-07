@@ -57,8 +57,20 @@ class BaseStrategy(abc.ABC):
         action. Default: no chain-based setup (pure price-action strategy)."""
         return None
 
+    # Parameters that set how far the stop and target sit from the entry; STOP_ATR_SCALE multiplies their DEFAULTS.
+    SCALED_PARAMETERS = ("stop_atr_mult", "target_atr_mult")
+
     def __init__(self, parameters: dict | None = None):
-        self.parameters = {**self.default_parameters, **(parameters or {})}
+        from quant_intelligence.config.settings import SETTINGS
+
+        defaults = dict(self.default_parameters)
+        scale = SETTINGS.stop_atr_scale
+        if scale != 1.0:
+            for key in self.SCALED_PARAMETERS:
+                if key in defaults:
+                    defaults[key] = round(defaults[key] * scale, 4)
+        # Explicit parameters (a user's own values) always win and are never scaled.
+        self.parameters = {**defaults, **(parameters or {})}
         self.validate_parameters(self.parameters)
 
     def validate_parameters(self, parameters: dict) -> None:

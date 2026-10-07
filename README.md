@@ -312,6 +312,22 @@ tested against mocked responses, not a live account - confirm the first renewal 
 
 ## Risk engine and position sizing
 
+### How loss per trade is set
+
+The rupee loss of a stopped trade is fixed by **position size, not by how wide the stop is**: the quantity is chosen so
+that (stop distance x quantity) fits `MAX_RISK_PER_TRADE_PCT` of equity, rounded down to whole lots. A wider stop simply
+buys fewer lots. At the default 0.2% that is about **Rs 1,800 on Rs 10 lakh** (it scales with equity and is halved
+after two losers in a row or once half the daily limit is gone). Two consequences to know:
+
+* **Whole lots.** One NIFTY lot (75) with a 15-point premium stop risks about Rs 1,100, so a stopped NIFTY trade loses
+  about Rs 1,100, not exactly Rs 1,800. The budget is a ceiling.
+* **Big lots can be unaffordable.** If even ONE lot's stop-loss exceeds the budget (many stock options, NATURALGAS,
+  COPPER ...) the setup is skipped, never forced to one lot. The decision log files it as `NO_SIZE`, and the Daily Report
+  names those instruments. A tighter stop (`STOP_ATR_SCALE` below 1) or a bigger account lets them fit.
+
+Environment variables override these defaults: if you set `MAX_RISK_PER_TRADE_PCT` / `MAX_DAILY_LOSS_PCT` in `.env` or in
+Streamlit **Secrets**, change them there too.
+
 `risk/risk_engine.py` is deterministic, independent of the research layer, and records every
 approval/veto (with reason and per-check results) to the `risk_events` table. Checks run in this order:
 
@@ -437,9 +453,10 @@ SQLite even with no `.env`.
 | `LTP_REFRESH_SECONDS` | `5` | Live price refresh on the dashboard. |
 | `EOD_SQUARE_OFF` | `true` | Close positions near each market's close. |
 | `EOD_SQUARE_OFF_MINUTES` | `5` | How many minutes before the close. |
-| `MAX_RISK_PER_TRADE_PCT` | `1.0` | Max loss at stop, % of equity. |
+| `MAX_RISK_PER_TRADE_PCT` | `0.2` | What one stopped trade may cost, % of equity (Rs 2,000 on Rs 10 lakh; sizing uses 90% of it, about Rs 1,800). Quantity is whole lots, so the real loss is the budget rounded down to a lot. An instrument whose single lot already risks more does not trade (the report says so). See *How loss per trade is set*. |
 | `MAX_CAPITAL_PER_TRADE_PCT` | `5.0` | Max premium outlay in one trade, % of equity (0 disables). |
-| `MAX_DAILY_LOSS_PCT` | `3.0` | Daily loss limit. |
+| `MAX_DAILY_LOSS_PCT` | `1.5` | Daily loss limit; trading stops for the day beyond it. |
+| `STOP_ATR_SCALE` | `1.0` | Multiplies the default stop and target distance of every ATR-based strategy together (0.5 = half as far). Explicit parameters are never scaled; clamped 0.2-3.0. |
 | `MAX_STRATEGY_EXPOSURE_PCT` | `10.0` | Risk concentrated in one strategy. |
 | `MAX_PORTFOLIO_EXPOSURE_PCT` | `20.0` | Total capital at risk. |
 | `MAX_TRADES_PER_DAY` | `6` | Daily trade count limit. |
