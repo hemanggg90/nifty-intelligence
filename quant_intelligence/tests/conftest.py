@@ -16,6 +16,7 @@ for _flag in ("VOL_MODELS_ENABLED", "VOL_FEATURES_IN_ANALOGUES", "VOL_PREMIUM_MO
     os.environ[_flag] = "false"  # a developer's .env must not change test results
 os.environ["DHAN_CLIENT_ID"] = ""  # a developer's .env credentials/expired token must not leak into tests
 os.environ["DHAN_ACCESS_TOKEN"] = ""
+os.environ["EOD_REPORT"] = "false"  # no background reports or forced square-offs in tests
 os.environ["TOKEN_KEEPER"] = "false"  # tests must never renew/replace tokens or call Dhan auth
 os.environ["DATA_KEEPER"] = "false"  # the real background thread must never start (or call Dhan) during tests
 os.environ["DATABASE_URL"] = "sqlite:///" + (Path(tempfile.mkdtemp(prefix="qi_test_db_")) / "test.db").as_posix()

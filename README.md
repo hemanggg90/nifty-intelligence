@@ -139,6 +139,7 @@ Run the app and use the sidebar page list. The main page (`app.py`) is the comma
 | 11 System Logs & Health | Dhan connectivity/credentials status and system logs. |
 | **12 Live Options Trading** | Real orders via Dhan - disabled unless fully authorised (see Safety model). |
 | **13 Auto Multi-Instrument Trading** | Background auto-trader over NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX and the 15-stock watchlist: control bar, live account/market tiles, a **market watch** (last price, change %, day-range bar, sparkline and the last scan result per instrument), and tabs for positions, scan results, an activity feed (orders, risk vetoes, exits) and today's performance. |
+| **15 Daily Report** | How the system worked each day and which strategies are earning, generated automatically after each market close and kept day by day: a plain-English summary, a strategy leaderboard with confidence (mean R with 95% whiskers - hollow marker means too few trades), signals-vs-trades funnel and why the system stood aside, realised vs backtest-expected R, breakdowns (instrument, exit reason, entry hour, TIE-BREAK vs normal ...), system/data health, and a table of every past day. Downloads: Excel, Markdown, JSON. |
 | **14 Commodity Auto Trading (MCX)** | The same layout for a second, independent background auto-trader for MCX commodities with its own session hours and square-off countdown. |
 
 A sidebar indicator on every page shows when auto-trading is running and offers a Stop button.
@@ -468,6 +469,9 @@ SQLite even with no `.env`.
 | `DATA_KEEPER`, `DATA_KEEPER_INTERVAL_SEC` | `true`, `60` | Background candle refresh for every watchlist instrument. |
 | `TOKEN_KEEPER`, `TOKEN_RENEW_BEFORE_HOURS` | `true`, `8` | Auto-renew the Dhan token when this many hours remain. |
 | `DHAN_PIN`, `DHAN_TOTP_SECRET` | *(unset)* | Optional. With both set the token keeper can generate a new token even after expiry. **Secrets: never commit or paste them.** |
+| `DATABASE_URL` | local SQLite | Use a hosted Postgres to keep history across reboots (see *Database*). |
+| `EOD_REPORT`, `EOD_FORCE_SQUARE_OFF` | `true`, `true` | Build the daily report after each close; close paper positions still open then. |
+| `LOG_RETENTION_DAYS`, `DECISION_RETENTION_DAYS` | `30`, `90` | How long log / scan-decision rows are kept (trades and reports are kept forever). |
 | `HOLIDAYS_FILE` | `config/market_holidays.txt` | File of variable exchange holidays (`YYYY-MM-DD [NSE|MCX] name`). |
 | `LOGS_DIR` | `logs/` | Where `system.log` is written (tests point it at a temp dir). |
 | `OPTION_PREMIUM_PCT`, `OPTION_DELTA` | `1.5`, `0.5` | Assumed option premium (% of the underlying's price) and delta used to convert the underlying backtest into option P&L and costs. |
@@ -509,6 +513,7 @@ quant_intelligence/
   app.py                       Streamlit command center
   pages/                       01-14 dashboard pages
   config/        settings.py (env config) | watchlist.py (stocks, commodities) | credentials.py (token updates)
+  reports/       performance.py (strategy analytics) | eod.py + eod_job.py (daily report) | decision_log.py | history_io.py (CSV restore) | export.py
   data/          data_manager.py (source order, cache, quality) | data_keeper.py (background refresh) | quality.py (validation/cleaning)
   data_adapters/ dhan_adapter | dhan_instrument_master (scrip master) | csv_adapter | nse_heatmap | synthetic (tests only)
   features/      feature_engine.py
@@ -544,8 +549,48 @@ SQLAlchemy models (`database/models.py`), SQLite by default. Tables: `instrument
 `market_data_metadata` (provenance and quality report of every data fetch), `market_states`,
 `regime_states`, `strategy_definitions`, `strategy_observations`, `backtest_runs`, `backtest_trades`,
 `strategy_metrics`, `analogue_matches`, `signals`, **`orders`**, **`fills`**, **`positions`**,
-**`risk_events`** (every approval and veto), `system_events`, `research_reports`. Columns added to models
+**`risk_events`** (every approval and veto), `system_events`, `research_reports`, **`scan_decisions`** (what was decided on every bar), **`daily_reports`**, `vol_forecasts`, `vol_model_scores`. Columns added to models
 later are migrated automatically on start (`ALTER TABLE ... ADD COLUMN`).
+
+### Keeping the trade history permanently (Postgres)
+
+The default database is a SQLite file on the server's disk. **Streamlit Cloud erases that disk whenever the app
+reboots or sleeps**, which takes every earlier trade and report with it. To keep them, point `DATABASE_URL` at a
+free hosted Postgres:
+
+1. Create a free database at [Neon](https://neon.tech) or [Supabase](https://supabase.com) and copy its connection
+   string (looks like `postgresql://user:password@host/dbname?sslmode=require`; `postgres://...` also works).
+2. In your Streamlit app: *Settings -> Secrets* and add `DATABASE_URL = "postgresql://..."`. The password is a
+   secret - never put it in git or chat. Reboot the app. Tables are created and upgraded automatically.
+3. Check *System Logs & Health*: the Database tile should say `OK (postgresql)` and the red SQLite warning disappears.
+4. Optional - bring existing history across from a local SQLite file: set `DATABASE_URL` in your shell or `.env`
+   to the Postgres URL, then `python scripts/migrate_db.py` (dry run) and `python scripts/migrate_db.py --apply`.
+   Safe to repeat; it never duplicates and skips the fake test trades.
+
+Free tiers are about 0.5 GB, so old log rows are trimmed daily (`LOG_RETENTION_DAYS` 30, `DECISION_RETENTION_DAYS`
+90); trades, orders, fills and reports are never trimmed. The Postgres driver and schema upgrade are covered by unit
+tests, but the first real connection can only be confirmed on your own database.
+
+**Restoring from files:** *Positions & Orders -> Trade history* has a **Download positions (CSV)** button and a
+**Restore earlier trades from a CSV** importer (matched on position id, so importing twice never duplicates).
+A position that was still open in the file comes back as STALE (no exit, excluded from statistics).
+
+### Daily report and decision log
+
+Every closed bar the system records what it decided per instrument (`scan_decisions`: no-trade reason, setup
+waiting/triggered, risk veto, rejected, filled), and every trade stores what the ranker expected at entry
+(`expected_r`, `confidence`, `regime`). After each close the data keeper builds the day's report (NSE about 15:40 IST,
+MCX just after midnight for the session that ended) into `daily_reports`, first settling any paper position still open
+(`EOD_FORCED` exit at the latest traded price; with no token it stays open and the report lists it). Switch off with
+`EOD_REPORT=false` / `EOD_FORCE_SQUARE_OFF=false`.
+
+**How to read the verdicts.** R = net P&L after charges divided by the premium risked at the stop, so trades of
+different size compare. A strategy is only called good or bad with at least 30 closed trades; "statistically
+significant" means the mean R is at least two standard errors from zero. With fewer trades the report says
+*too few trades to conclude* however good the average looks - early paper results are mostly noise. Positions
+left open when the app slept (STALE) have no result and are reported separately.
+
+
 
 ## Testing
 

@@ -173,6 +173,12 @@ class Settings:
     data_keeper_enabled: bool = _bool_env("DATA_KEEPER", True)
     data_keeper_interval_sec: int = _int_env("DATA_KEEPER_INTERVAL_SEC", 60)
 
+    # End-of-day report (reports/eod_job.py): built by the data keeper after each market closes.
+    eod_report_enabled: bool = _bool_env("EOD_REPORT", True)
+    eod_force_square_off: bool = _bool_env("EOD_FORCE_SQUARE_OFF", True)  # close paper positions still open after the close
+    log_retention_days: int = _int_env("LOG_RETENTION_DAYS", 30)  # system_events / market_data_metadata
+    decision_retention_days: int = _int_env("DECISION_RETENTION_DAYS", 90)  # scan_decisions
+
     # Volatility layer (quant_intelligence/volatility/). Every behaviour change is OFF by default; the pure
     # computation modules (estimators, Black-Scholes) are always importable.
     vol_models_enabled: bool = _bool_env("VOL_MODELS_ENABLED", False)

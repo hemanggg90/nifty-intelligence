@@ -105,11 +105,14 @@ def history_table(df: pd.DataFrame):
             "Status": df["status"],
             "Exit reason": df["exit_reason"].map(exit_reason_label),
             "Strategy": df["strategy"],
+            "Tag": df["tag"].fillna("") if "tag" in df else "",
+            "Expected R": df["expected_r"] if "expected_r" in df else None,
             "Position ID": df["position_id"],
         }
     )
     return d.style.format(
         {"Entry": lambda v: F.num(v, 2), "Exit": lambda v: F.num(v, 2), "Net P&L": _signed0,
+         "Expected R": lambda v: f"{v:+.2f}" if pd.notna(v) else "–",
          "Opened": lambda v: f"{v:%d %b %H:%M}" if pd.notna(v) else "–"}
     ).map(_pnl_color, subset=["Net P&L"])
 

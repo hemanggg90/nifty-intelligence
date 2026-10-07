@@ -46,6 +46,9 @@ class DataKeeper:
         self.last_error: str | None = None
         from quant_intelligence.volatility.job import VolJob
 
+        from quant_intelligence.reports.eod_job import EodJob
+
+        self.eod_job = EodJob()  # daily report after each close (EOD_REPORT); works without a token
         self.vol_job = VolJob()  # once-a-day volatility models (VOL_MODELS_ENABLED); never runs in a scan cycle
         self.paused = False  # True while the token is unusable: no requests are sent until a valid one appears
         self.instruments: dict[str, dict] = {}  # symbol -> {"last_bar", "quality", "issues", "checked_at"}
@@ -86,6 +89,10 @@ class DataKeeper:
             except Exception as e:  # a bad round must never kill the keeper
                 self.last_error = f"{type(e).__name__}: {e}"
                 log_event("data_keeper", f"Refresh round failed: {e}", level="ERROR")
+            try:
+                self.eod_job.run_round()
+            except Exception as e:  # a failed report must never disturb the candle refresh
+                log_event("data_keeper", f"EOD job failed: {e}", level="ERROR")
             if not self.paused:
                 try:
                     self.vol_job.run_round(watchlist_symbols(), self._stop)

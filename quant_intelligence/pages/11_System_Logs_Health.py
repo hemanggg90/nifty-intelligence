@@ -9,7 +9,7 @@ from quant_intelligence.brokers.dhan_rate_limit import LIMITER
 from quant_intelligence.config.settings import SETTINGS
 from quant_intelligence.data.data_keeper import DATA_KEEPER
 from quant_intelligence.data_adapters.dhan_adapter import DhanAdapter
-from quant_intelligence.database.db import get_engine, get_session
+from quant_intelligence.database.db import backend_name, get_engine, get_session, is_durable
 from quant_intelligence.database.models import MarketDataMetadata, SystemEvent
 from quant_intelligence.ui.state import init_session_state
 from quant_intelligence.ui.theme import apply_theme
@@ -25,7 +25,13 @@ try:
     get_engine().connect().close()
 except Exception:
     db_ok = False
-col1.metric("Database", "OK" if db_ok else "FAIL")
+col1.metric("Database", ("OK" if db_ok else "FAIL") + f" ({backend_name()})")
+if db_ok and not is_durable():
+    st.warning(
+        "Trade history is stored in a local SQLite file. On Streamlit Cloud that disk is wiped whenever the app "
+        "reboots or sleeps, so earlier days' trades and reports are lost. Set DATABASE_URL (a free Neon or Supabase "
+        "Postgres) in the app's Secrets to keep them permanently - see the README."
+    )
 
 dhan = DhanAdapter()
 col2.metric("Dhan Data API", "CONFIGURED" if dhan.is_available() else "NOT CONFIGURED (no market data without CSV)")

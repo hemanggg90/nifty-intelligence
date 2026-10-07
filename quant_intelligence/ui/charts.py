@@ -129,24 +129,29 @@ def price_chart(
     return fig
 
 
-def equity_curve_chart(curve: pd.DataFrame, height: int = 300) -> go.Figure:
-    """Cumulative net P&L by trade: one line, a zero baseline, the end value labelled."""
+def equity_curve_chart(curve: pd.DataFrame, height: int = 300, by_time: bool = False) -> go.Figure:
+    """Cumulative net P&L: one line, a zero baseline, the end value labelled. The x-axis is the closed-trade number,
+    or (by_time=True) the dates in `curve["time"]` - then each point is one day."""
     fig = go.Figure()
     if len(curve):
-        x = list(range(1, len(curve) + 1))
+        x = list(pd.to_datetime(curve["time"])) if by_time else list(range(1, len(curve) + 1))
         fig.add_trace(
             go.Scatter(x=x, y=curve["equity"], mode="lines+markers", name="Cumulative net P&L",
                        line=dict(color=BLUE, width=2), marker=dict(size=6, color=BLUE, line=dict(color=SURFACE, width=2)),
                        customdata=np.stack([curve["trade"], curve["pnl"]], axis=-1),
-                       hovertemplate="Trade %{x}: %{customdata[0]}<br>Trade P&L %{customdata[1]:,.0f}<br>"
-                                     "Cumulative %{y:,.0f}<extra></extra>")
+                       hovertemplate=("%{customdata[0]}<br>Day P&L %{customdata[1]:,.0f}<br>" if by_time else
+                                      "Trade %{x}: %{customdata[0]}<br>Trade P&L %{customdata[1]:,.0f}<br>")
+                                     + "Cumulative %{y:,.0f}<extra></extra>")
         )
         last = float(curve["equity"].iloc[-1])
         fig.add_annotation(x=x[-1], y=last, text=inr(last, signed=True), showarrow=False, xanchor="left",
                            xshift=8, font=dict(color=TEXT, size=12))
         fig.add_hline(y=0, line=dict(color=MUTED, width=1))
     _base_layout(fig, height, legend=False)
-    fig.update_xaxes(title_text="Closed trade #", title_font=dict(color=MUTED), dtick=1 if len(curve) <= 15 else None)
+    if by_time:
+        fig.update_xaxes(title_text="Day", title_font=dict(color=MUTED))
+    else:
+        fig.update_xaxes(title_text="Closed trade #", title_font=dict(color=MUTED), dtick=1 if len(curve) <= 15 else None)
     fig.update_layout(margin=dict(l=8, r=60, t=12, b=8), hovermode="closest")
     return fig
 
@@ -168,6 +173,33 @@ def pnl_bar_chart(df: pd.DataFrame, label: str, value: str = "net_pnl", height: 
     lo, hi = min(0.0, float(d[value].min())), max(0.0, float(d[value].max()))
     pad = max(hi - lo, 1.0) * 0.32
     fig.update_xaxes(range=[lo - pad if lo < 0 else 0, hi + pad if hi > 0 else pad], tickformat=",.0f")
+    fig.update_yaxes(automargin=True)
+    fig.update_layout(margin=dict(l=8, r=20, t=8, b=8), hovermode="closest")
+    return fig
+
+
+def r_ci_chart(table: pd.DataFrame, height: int | None = None) -> go.Figure:
+    """Mean R per strategy with its 95% interval (mean +/- 1.96 standard errors) against a zero line.
+
+    A hollow marker means too few trades to conclude; a filled one has enough. A whisker that crosses zero says
+    the result cannot be told apart from no edge - the honest default for most strategies on a short history."""
+    d = table.dropna(subset=["avg_r"]).sort_values("avg_r", ascending=True)
+    fig = go.Figure()
+    if len(d):
+        enough = d["verdict"] != "TOO_FEW"
+        err = (1.96 * d["r_se"].fillna(0.0)).to_numpy(float)
+        labels = [f"{n} (n={int(t)})" for n, t in zip(d["strategy"], d["trades"])]
+        fig.add_trace(go.Scatter(
+            x=d["avg_r"], y=labels, mode="markers",
+            marker=dict(size=11, color=[BLUE if e else SURFACE for e in enough], symbol="circle",
+                        line=dict(color=BLUE, width=2)),
+            error_x=dict(type="data", array=err, color=MUTED, thickness=1.5, width=5),
+            customdata=np.stack([d["verdict_text"], d["t_stat"].fillna(0.0)], axis=-1),
+            hovertemplate="%{y}<br>Mean R %{x:+.2f}<br>%{customdata[0]}<br>t = %{customdata[1]:.2f}<extra></extra>",
+        ))
+        fig.add_vline(x=0, line=dict(color=MUTED, width=1))
+    _base_layout(fig, height or max(200, 46 * len(d) + 70), legend=False)
+    fig.update_xaxes(title_text="Mean R per trade (net of charges), 95% interval", title_font=dict(color=MUTED), zeroline=False)
     fig.update_yaxes(automargin=True)
     fig.update_layout(margin=dict(l=8, r=20, t=8, b=8), hovermode="closest")
     return fig

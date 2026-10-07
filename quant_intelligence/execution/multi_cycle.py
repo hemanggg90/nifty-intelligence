@@ -71,6 +71,9 @@ def run_multi_instrument_cycle(
             try:
                 triggered_chain = chain_provider()
             except Exception as e:
+                from quant_intelligence.reports.decision_log import log_chain_error
+
+                log_chain_error(symbol, output, str(e))
                 rows.append(
                     {
                         "symbol": symbol,

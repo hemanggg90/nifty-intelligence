@@ -75,6 +75,11 @@ class PaperBroker(BaseBroker):
             "expiry": order.expiry,
             "transaction": transaction if order.option_type else None,
             "tag": order.tag,
+            "order_id": order_id,
+            "decision_id": order.decision_id,
+            "expected_r": order.expected_r,
+            "confidence": order.confidence,
+            "regime": order.regime,
         }
 
         ack = self._record(order, order_id, "FILLED", None, fill_price=simulated_fill_price)

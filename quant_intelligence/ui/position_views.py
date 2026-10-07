@@ -19,6 +19,7 @@ _COLUMNS = [
     "position_id", "instrument", "strategy", "contract", "side", "option_type", "strike", "expiry", "qty",
     "entry", "stop", "target", "status", "opened_at", "closed_at", "exit_price", "exit_reason", "security_id",
     "market", "invested", "gross_pnl", "charges", "net_pnl", "return_pct", "held", "tag",
+    "order_id", "decision_id", "expected_r", "confidence", "regime",
 ]
 
 
@@ -79,6 +80,11 @@ def positions_frame(rows: Iterable, now: dt.datetime | None = None) -> pd.DataFr
                 "return_pct": (gross / ((entry or 0.0) * qty) * 100.0) if gross is not None and entry and qty else None,
                 "held": (end - opened) if opened is not None else None,
                 "tag": _get(r, "tag"),
+                "order_id": _get(r, "order_id"),
+                "decision_id": _get(r, "decision_id"),
+                "expected_r": _get(r, "expected_r"),
+                "confidence": _get(r, "confidence"),
+                "regime": _get(r, "regime"),
             }
         )
     return pd.DataFrame.from_records(records, columns=_COLUMNS)

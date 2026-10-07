@@ -15,10 +15,12 @@ import pandas as pd
 import streamlit as st
 
 from quant_intelligence.config.settings import SETTINGS
-from quant_intelligence.database.db import get_session
+from quant_intelligence.database.db import get_session, is_durable
 from quant_intelligence.database.models import Fill, Order, Position
 from quant_intelligence.execution.capital import capital_summary
 from quant_intelligence.execution.engine import ENGINE
+from quant_intelligence.reports.history_io import import_positions
+from quant_intelligence.reports.performance import unresolved
 from quant_intelligence.ui import format as F
 from quant_intelligence.ui.charts import equity_curve_chart, pnl_bar_chart
 from quant_intelligence.ui.components import empty_state, kpi_row, page_header
@@ -43,9 +45,10 @@ page_header(
 def _history() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Closed/stale positions, orders and fills from the database (open ones come live from the broker)."""
     with get_session() as session:
-        pos = session.query(Position).filter(Position.status != "OPEN").order_by(Position.id.desc()).limit(2000).all()
-        orders = session.query(Order).order_by(Order.id.desc()).limit(1000).all()
-        fills = session.query(Fill).order_by(Fill.id.desc()).limit(1000).all()
+        # No cap on positions: the full history is the point. Orders/fills are bounded only to keep the page fast.
+        pos = session.query(Position).filter(Position.status != "OPEN").order_by(Position.id.desc()).all()
+        orders = session.query(Order).order_by(Order.id.desc()).limit(20000).all()
+        fills = session.query(Fill).order_by(Fill.id.desc()).limit(20000).all()
     orders_df = orders_frame(orders)
     return positions_frame(pos, now=now_ist()), orders_df, fills_frame(fills, orders_df)
 
@@ -120,11 +123,38 @@ with tab_today:
         st.dataframe(trades_table(today.sort_values("closed_at", ascending=False)), width="stretch", hide_index=True)
 
 with tab_hist:
+    if not is_durable():
+        st.warning(
+            "History is stored in a local SQLite file. On Streamlit Cloud it is erased whenever the app reboots or "
+            "sleeps. Set DATABASE_URL (a free Neon/Supabase Postgres) in the app's Secrets to keep every trade - see the README.",
+            icon="⚠️",
+        )
+    _un = unresolved(hist_df) if len(hist_df) else {"stale": 0, "invested": 0.0, "dates": []}
+    if _un["stale"]:
+        st.info(
+            f"{_un['stale']} position(s) from {', '.join(_un['dates'][:4])}{'...' if len(_un['dates']) > 4 else ''} were left "
+            f"open when the app stopped, so they have no exit and no result ({F.inr(_un['invested'])} entry value). "
+            "They are shown as STALE and excluded from every statistic."
+        )
+    with st.expander("Restore earlier trades from a CSV download"):
+        st.caption("Upload a file saved from this tab's 'Download positions (CSV)'. Trades already stored are skipped, "
+                   "so it is safe to import the same file twice.")
+        up = st.file_uploader("Positions CSV", type=["csv"], key="import_positions_csv")
+        if up is not None and st.button("Import trades", key="import_positions_go"):
+            try:
+                result = import_positions(pd.read_csv(up))
+                st.success(f"Imported {result['inserted']} trade(s); {result['skipped_existing']} already stored.")
+                for line, why in result["invalid"][:10]:
+                    st.warning(f"Line {line}: {why}")
+                if result["inserted"]:
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Could not import that file: {e}")
     if hist_df.empty:
         empty_state("No trade history yet")
     else:
         f1, f2, f3, f4 = st.columns(4)
-        status_pick = f1.multiselect("Status", sorted(hist_df["status"].dropna().unique()), default=["CLOSED"])
+        status_pick = f1.multiselect("Status", sorted(hist_df["status"].dropna().unique()), default=["CLOSED", "STALE"])
         inst_pick = f2.multiselect("Instrument", sorted(hist_df["instrument"].dropna().unique()))
         strat_pick = f3.multiselect("Strategy", sorted(hist_df["strategy"].dropna().unique()))
         dates = pd.to_datetime(hist_df["opened_at"]).dropna()

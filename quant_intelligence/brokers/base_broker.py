@@ -34,6 +34,10 @@ class OrderRequest:
     expiry: str | None = None
     lot_size: int = 1
     tag: str | None = None  # e.g. "TIE-BREAK": the order came from a tied ranking, sized down
+    # What the ranker expected when it chose this strategy (kept on the position for realised-vs-expected analysis).
+    expected_r: float | None = None
+    confidence: str | None = None
+    regime: str | None = None
 
 
 @dataclass

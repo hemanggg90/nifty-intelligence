@@ -11,6 +11,7 @@ import datetime as dt
 from sqlalchemy import (
     Boolean,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -18,6 +19,7 @@ from sqlalchemy import (
     String,
     Text,
     JSON,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase
 
@@ -277,6 +279,12 @@ class Position(Base):
     expiry = Column(String(16))
     transaction = Column(String(8))  # BUY / SELL
     tag = Column(String(24))  # e.g. TIE-BREAK
+    # What the system knew when it entered, so a trade can later be compared with its expectation.
+    order_id = Column(String(64))  # the entry order
+    decision_id = Column(String(64))  # the risk decision that approved it
+    expected_r = Column(Float)  # the ranker's conditional net expected R for the strategy at entry
+    confidence = Column(String(24))  # HIGH / MEDIUM / LOW ...
+    regime = Column(String(32))  # market regime at entry
 
 
 class RiskEvent(Base):
@@ -349,3 +357,41 @@ class VolModelScore(Base):
     dm_p = Column(Float)  # one-sided p-value that the model beats EWMA
     selected = Column(Boolean, default=False)
     details = Column(JSON)
+
+
+class ScanDecision(Base):
+    """What the system decided for one instrument on one closed bar (strongest outcome wins). Feeds the
+    signals-vs-trades funnel in the daily report."""
+
+    __tablename__ = "scan_decisions"
+    __table_args__ = (UniqueConstraint("instrument", "bar_ts", name="uq_scan_decision_bar"),)
+
+    id = Column(Integer, primary_key=True)
+    decided_at = Column(DateTime, nullable=False, index=True)  # naive IST wall clock
+    bar_ts = Column(DateTime, nullable=False)  # the closed bar the decision was made on
+    instrument = Column(String(32), nullable=False, index=True)
+    market = Column(String(8))  # NSE / MCX
+    strategy = Column(String(64))
+    status = Column(String(16))  # NO_TRADE / SKIPPED / WAITING / NO_SETUP / CHAIN_ERROR / TRIGGERED / VETOED / REJECTED / FILLED
+    reason_class = Column(String(32))  # short code: TIED, NO_EDGE, DATA_QUALITY, TRADE_RISK, ...
+    reason = Column(Text)
+    tie_break = Column(Boolean, default=False)
+    expected_r = Column(Float)
+    confidence = Column(String(24))
+    decision_id = Column(String(64))
+    order_id = Column(String(64))
+    tag = Column(String(24))
+
+
+class DailyReport(Base):
+    """The end-of-day report for one date (re-generating the same date replaces it)."""
+
+    __tablename__ = "daily_reports"
+    __table_args__ = (UniqueConstraint("report_date", "scope", name="uq_daily_report"),)
+
+    id = Column(Integer, primary_key=True)
+    report_date = Column(Date, nullable=False, index=True)
+    scope = Column(String(8), nullable=False, default="ALL")  # ALL / NSE / MCX
+    generated_at = Column(DateTime, default=utcnow)
+    content_json = Column(JSON)
+    content_markdown = Column(Text)

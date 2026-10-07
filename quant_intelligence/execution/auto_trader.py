@@ -106,7 +106,31 @@ def chain_needed(output: PipelineOutput, underlying: str, broker: PaperBroker) -
     return status.status == SETUP_TRIGGERED
 
 
+def _expectation(output: PipelineOutput) -> dict:
+    """What the ranker expected from the strategy it selected (stored on the order and position)."""
+    ranking = output.ranking
+    score = next((s for s in getattr(ranking, "ranked", []) if s.strategy_name == ranking.selected_strategy), None)
+    return {"expected_r": getattr(score, "expected_r", None), "confidence": getattr(score, "confidence_label", None),
+            "regime": getattr(output, "regime_label", None)}
+
+
 def run_auto_option_cycle(
+    output: PipelineOutput,
+    underlying: str,
+    broker: PaperBroker,
+    client: DhanApiClient,
+    chain: "ChainSnapshot | Callable[[], ChainSnapshot | None] | None",
+    account: AccountState,
+) -> AutoCycleResult:
+    """One automatic cycle (see `_run_auto_option_cycle`); the outcome is also written to the decision log."""
+    result = _run_auto_option_cycle(output, underlying, broker, client, chain, account)
+    from quant_intelligence.reports.decision_log import log_cycle
+
+    log_cycle(output, result)
+    return result
+
+
+def _run_auto_option_cycle(
     output: PipelineOutput,
     underlying: str,
     broker: PaperBroker,
@@ -242,6 +266,7 @@ def run_auto_option_cycle(
         expiry=contract.expiry,
         lot_size=contract.lot_size,
         tag=result.tag,
+        **_expectation(output),
     )
     result.order = broker.place_order(order, market_price=premium_setup.entry_price)
     result.reason = f"Order {result.order.status}" + (f" ({TIE_BREAK_TAG}, size x{size_factor:g})" if tie_break else "")
@@ -251,6 +276,15 @@ def run_auto_option_cycle(
 
 
 def run_auto_equity_cycle(output: PipelineOutput, broker: PaperBroker, account: AccountState) -> AutoCycleResult:
+    """One automatic equity cycle (see `_run_auto_equity_cycle`); the outcome is also written to the decision log."""
+    result = _run_auto_equity_cycle(output, broker, account)
+    from quant_intelligence.reports.decision_log import log_cycle
+
+    log_cycle(output, result)
+    return result
+
+
+def _run_auto_equity_cycle(output: PipelineOutput, broker: PaperBroker, account: AccountState) -> AutoCycleResult:
     """One automatic cycle for a direct equity (cash-market) paper trade - no options.
 
     Used for per-stock trading where there is no live option chain: only the
@@ -320,6 +354,7 @@ def run_auto_equity_cycle(output: PipelineOutput, broker: PaperBroker, account: 
         decision_id=decision.decision_id,
         exchange_segment="NSE_EQ",
         product_type="CNC",
+        **_expectation(output),
     )
     result.order = broker.place_order(order, market_price=setup.entry_price)
     result.reason = f"Order {result.order.status}"
