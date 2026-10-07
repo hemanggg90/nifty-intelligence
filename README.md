@@ -696,6 +696,21 @@ temporary database and log directory and never write to your real ones, nor star
   real costs. The samples are small, so do not read anything into the NIFTY/BANKNIFTY difference. Re-run the
   command above on your own data before relying on it, and keep `TIE_BREAK_LIVE` off until paper trading of the
   tagged trades shows they are not losing.
+- **Tighter stops did not improve results.** `python scripts/evaluate_stop_scales.py` (all 17 strategies on 25 cached
+  instruments, ~60 days of 5-minute data, Black-Scholes option premium, one lot per trade, 7 Oct 2026):
+
+  | `STOP_ATR_SCALE` | Trades | Win rate | Mean net R | Median stop (% of premium) | Median one-lot loss | Trades that fit Rs 1,800 |
+  |---|---|---|---|---|---|---|
+  | 1.0 (default) | 22,867 | 34.6% | -0.44 | 4.0% | Rs 741 | 83% |
+  | 0.75 | 24,768 | 34.3% | -0.49 | 3.3% | Rs 594 | 85% |
+  | 0.5 | 26,267 | 34.9% | -0.58 | 2.4% | Rs 441 | 87% |
+
+  A tighter stop raises the share of trades one lot can afford only slightly, leaves the win rate unchanged and makes
+  net R worse (more small losses, and the fixed brokerage is a bigger share of a smaller risk). The intervals are
+  overstated because strategies and bars overlap, and these are all signals, not the ranker's picks, so treat the
+  direction as the finding, not the decimals. The loss per stopped trade is therefore reduced through position size
+  (`MAX_RISK_PER_TRADE_PCT`), not by tightening stops. GOLD and SILVER (lots of 100 and 30) almost never fit the
+  Rs 1,800 budget; their mini contracts (GOLDM, SILVERM) do.
 - **Paper != live.** Paper fills use simple slippage on the last price; real fills depend on liquidity and
   spread. Sold-option margin is not modelled. Only holidays listed in `market_holidays.txt` (plus the fixed-date ones) are modelled.
 - **Live trading is unproven** against a funded account.
