@@ -310,3 +310,42 @@ class ResearchReport(Base):
     report_type = Column(String(32))
     content_json = Column(JSON)
     content_markdown = Column(Text)
+
+
+class VolForecastRow(Base):
+    """A volatility forecast stored by the daily vol job (read, never computed, by trading cycles)."""
+
+    __tablename__ = "vol_forecasts"
+
+    id = Column(Integer, primary_key=True)
+    instrument = Column(String(32), nullable=False, index=True)
+    model = Column(String(16), nullable=False)  # EWMA / GARCH / GJR / EGARCH / HAR-RV
+    asof = Column(DateTime)  # data used up to and including this date
+    horizon_days = Column(Integer, default=1)
+    sigma_1d = Column(Float)  # daily volatility, decimal (0.01 = 1%)
+    sigma_horizon = Column(Float)  # total volatility over horizon_days, decimal
+    selected = Column(Boolean, default=False)  # the model chosen for this instrument
+    diagnostics = Column(JSON)  # params, or {"fallback": "EWMA", "reason": ...}
+    created_at = Column(DateTime, default=utcnow)
+
+
+class VolModelScore(Base):
+    """Out-of-sample score of one model for one instrument (one evaluation run = one evaluated_at)."""
+
+    __tablename__ = "vol_model_scores"
+
+    id = Column(Integer, primary_key=True)
+    instrument = Column(String(32), nullable=False, index=True)
+    model = Column(String(16), nullable=False)
+    evaluated_at = Column(DateTime, default=utcnow, index=True)
+    n_obs = Column(Integer)
+    qlike = Column(Float)  # lower is better
+    mse = Column(Float)
+    mz_alpha = Column(Float)
+    mz_beta = Column(Float)
+    mz_r2 = Column(Float)
+    mz_p = Column(Float)  # Mincer-Zarnowitz joint test of alpha=0, beta=1
+    dm_stat = Column(Float)  # Diebold-Mariano statistic vs EWMA (positive = better than EWMA)
+    dm_p = Column(Float)  # one-sided p-value that the model beats EWMA
+    selected = Column(Boolean, default=False)
+    details = Column(JSON)

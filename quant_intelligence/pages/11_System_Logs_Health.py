@@ -70,6 +70,31 @@ st.dataframe(
 )
 
 st.divider()
+st.subheader("Volatility models (daily job)")
+from quant_intelligence.data.data_keeper import watchlist_symbols  # noqa: E402
+from quant_intelligence.volatility import store as vol_store  # noqa: E402
+
+_vj = DATA_KEEPER.vol_job.status(watchlist_symbols())
+if not _vj["enabled"]:
+    st.caption("Off (VOL_MODELS_ENABLED=false). When on, the data keeper fits EWMA / GARCH / GJR / EGARCH / HAR-RV "
+               "once a day after each close and stores the result; trading cycles only read it.")
+else:
+    st.caption(f"{_vj['done']} of {_vj['tracked']} instruments have today's forecast"
+               + (f" · last run {_vj['last_run_at']:%d %b %H:%M} IST" if _vj["last_run_at"] else " · not run yet"))
+    if _vj["failed"]:
+        st.warning(f"Failed: {', '.join(_vj['failed'][:8])} - {_vj['error']}")
+    _rows = []
+    for _s in watchlist_symbols():
+        _f = vol_store.latest_forecast(_s)
+        if _f:
+            _rows.append({"Instrument": _s, "Model": _f["model"], "As of": _f["asof"],
+                          "1-day vol %": round(_f["sigma_1d"] * 100, 2),
+                          "Annualised %": round(_f["sigma_1d"] * (252 ** 0.5) * 100, 1),
+                          "Why": (_vj["by_symbol"].get(_s) or {}).get("reason") or ""})
+    if _rows:
+        st.dataframe(_rows, width="stretch", hide_index=True)
+
+st.divider()
 st.subheader("Data feed (background refresh)")
 feed = DATA_KEEPER.status()
 if not feed["running"]:

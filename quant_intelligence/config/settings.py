@@ -181,6 +181,11 @@ class Settings:
     vol_target_sizing: bool = _bool_env("VOL_TARGET_SIZING", False)
     vol_risk_check: bool = _bool_env("VOL_RISK_CHECK", False)
     vol_iv_gate: bool = _bool_env("VOL_IV_GATE", False)
+    vol_refit_every_days: int = _int_env("VOL_REFIT_EVERY_DAYS", 5)  # GARCH/HAR parameter re-estimation schedule
+    vol_history_years: int = _int_env("VOL_HISTORY_YEARS", 5)  # daily history requested for the vol models
+    vol_min_train_days: int = _int_env("VOL_MIN_TRAIN_DAYS", 500)
+    vol_min_eval_days: int = _int_env("VOL_MIN_EVAL_DAYS", 250)
+    vol_dm_alpha: float = _float_env("VOL_DM_ALPHA", 0.10)  # a model must beat EWMA at this one-sided level
     risk_free_rate: float = _float_env("RISK_FREE_RATE", 0.065)  # continuous, annual; India ~6-7%
     dividend_yield: float = _float_env("DIVIDEND_YIELD", 0.012)  # index/stock carry; MCX uses q = r
     trading_days_per_year: int = _int_env("TRADING_DAYS_PER_YEAR", 252)
