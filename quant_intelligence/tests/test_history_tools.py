@@ -159,3 +159,25 @@ def test_the_script_refuses_to_copy_a_file_onto_itself(monkeypatch, capsys, tmp_
     if not src.exists():
         pytest.skip("test database file is created lazily")
     assert mod.main() == 1 and "source file itself" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- the history filter must not crash on any data
+def test_default_statuses_only_offers_what_exists():
+    from quant_intelligence.ui.position_views import default_statuses
+
+    assert default_statuses(["CLOSED"]) == ["CLOSED"]  # the crash: STALE was pre-selected but not an option
+    assert default_statuses(["CLOSED", "OPEN", "STALE"]) == ["CLOSED", "STALE"]
+    assert default_statuses(["OPEN"]) == [] and default_statuses([]) == []
+
+
+def test_the_history_tab_renders_when_every_trade_is_closed():
+    from streamlit.testing.v1 import AppTest
+
+    from quant_intelligence.database.db import get_session, init_db
+
+    init_db()
+    with get_session() as s:
+        s.add(_position("HISTPAGE-1"))  # a CLOSED trade; there is no STALE row in this database state
+    page = Path(__file__).resolve().parents[1] / "pages" / "08_Positions_and_Orders.py"
+    at = AppTest.from_file(str(page), default_timeout=120).run()
+    assert not at.exception, [e.value for e in at.exception]

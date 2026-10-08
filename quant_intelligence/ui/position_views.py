@@ -202,6 +202,13 @@ def pnl_by(closed: pd.DataFrame, key: str) -> pd.DataFrame:
     return out.reset_index().sort_values("net_pnl", ascending=False).reset_index(drop=True)
 
 
+def default_statuses(options) -> list[str]:
+    """Statuses pre-selected in the history filter: CLOSED and STALE, but only those that exist in the data
+    (a multiselect default outside its options raises a Streamlit error)."""
+    present = set(options)
+    return [s for s in ("CLOSED", "STALE") if s in present]
+
+
 def exit_reason_label(reason: str | None) -> str:
     return {
         "STOP": "Stop-loss hit", "TARGET": "Target hit", "EOD_SQUARE_OFF": "End-of-day square-off",

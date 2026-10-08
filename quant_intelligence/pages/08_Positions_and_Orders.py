@@ -26,7 +26,7 @@ from quant_intelligence.ui.charts import equity_curve_chart, pnl_bar_chart
 from quant_intelligence.ui.components import empty_state, kpi_row, page_header
 from quant_intelligence.ui.open_positions import live_open, render_open_positions
 from quant_intelligence.ui.position_views import (
-    charges_breakdown, equity_curve, fills_frame, orders_frame, pnl_by, positions_frame, trade_stats, with_live,
+    charges_breakdown, default_statuses, equity_curve, fills_frame, orders_frame, pnl_by, positions_frame, trade_stats, with_live,
 )
 from quant_intelligence.ui.state import init_session_state
 from quant_intelligence.ui.tables import fills_table, history_table, orders_table, trades_table
@@ -154,7 +154,8 @@ with tab_hist:
         empty_state("No trade history yet")
     else:
         f1, f2, f3, f4 = st.columns(4)
-        status_pick = f1.multiselect("Status", sorted(hist_df["status"].dropna().unique()), default=["CLOSED", "STALE"])
+        status_options = sorted(hist_df["status"].dropna().unique())
+        status_pick = f1.multiselect("Status", status_options, default=default_statuses(status_options))
         inst_pick = f2.multiselect("Instrument", sorted(hist_df["instrument"].dropna().unique()))
         strat_pick = f3.multiselect("Strategy", sorted(hist_df["strategy"].dropna().unique()))
         dates = pd.to_datetime(hist_df["opened_at"]).dropna()
