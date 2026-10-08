@@ -106,6 +106,17 @@ def _live_header(runner: ScanRunner, market: str, symbols: list[str]) -> None:
         {"label": "Needed by signals", "value": F.inr(required_now),
          "help": "Premium x quantity for setups that triggered in the last scan"},
     ])
+    try:
+        from quant_intelligence.execution.auto_trader import risk_budget
+
+        budget, mult, why = risk_budget(runner.owner.account_state())
+        st.caption(
+            f"Loss limit: a stopped {market} trade risks at most {F.inr(budget)} ({SETTINGS.risk.max_risk_per_trade_pct:g}% of equity, "
+            f"whole lots; same limit as every market" + (f"; cut to {mult:.0%} now - {why}" if mult < 1 else "")
+            + "). An instrument whose single lot would lose more than that at its stop is skipped (see 'NO SIZE' in the scan detail)."
+        )
+    except Exception:
+        pass
     if cap["sell_premium_value"]:
         st.caption(f"Open SELL positions carry {F.inr(cap['sell_premium_value'])} of premium value; exchange margin is not modelled.")
 

@@ -159,3 +159,23 @@ def test_the_scale_is_clamped_to_a_sane_range():
     finally:
         os.environ["STOP_ATR_SCALE"] = old or "1.0"
         importlib.reload(settings_module)
+
+
+# ---------------------------------------------------------------- commodities use the very same budget
+def test_commodity_lots_obey_the_same_budget_and_big_ones_are_skipped(new_limits):
+    """MCX goes through the same sizing and risk engine: CRUDEOIL (lot 100) fits, GOLD (lot 100 at a Rs 85 stop) cannot."""
+    qty = auto_trader.size_position(_account(), 170.0, 158.0, 100)  # one lot risks Rs 1,200
+    assert qty == 100 and qty * 12.0 <= auto_trader.risk_budget(_account())[0]
+    assert auto_trader.size_position(_account(), 900.0, 815.0, 100) == 0  # one lot risks Rs 8,500
+    reason = auto_trader._zero_size_reason(_account(), 900.0, 815.0, 100)
+    assert reason.startswith("NO SIZE") and "Rs 8,500" in reason
+    mini = auto_trader.size_position(_account(), 90.0, 81.5, 10)  # GOLDM-like: 10 lots-worth fits several times over
+    assert mini > 0 and mini * 8.5 <= 1800.0
+
+
+def test_the_commodity_runner_is_built_on_the_same_cycle_as_nse():
+    import inspect
+
+    from quant_intelligence.execution import multi_cycle
+
+    assert "run_auto_option_cycle" in inspect.getsource(multi_cycle)  # one code path, so one risk limit for NSE and MCX
