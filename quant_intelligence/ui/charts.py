@@ -178,6 +178,47 @@ def pnl_bar_chart(df: pd.DataFrame, label: str, value: str = "net_pnl", height: 
     return fig
 
 
+# Diverging pair for "up" and "down": blue and orange around a dark neutral, so the green/red used for profit and loss
+# elsewhere keep their meaning. Direction is never colour-only: every tile carries an arrow and a signed percentage.
+UP_COLOR, DOWN_COLOR, FLAT_COLOR = "#1d5fbf", "#b85a0b", "#3a3f4a"
+
+
+def heatmap_treemap(df: pd.DataFrame, size_col: str | None = None, color_limit: float = 3.0, height: int = 520) -> go.Figure:
+    """Treemap of instruments grouped group -> sector, coloured by `change_pct` (needs columns symbol, name, group,
+    sector, change_pct, last). Equal-sized tiles unless `size_col` is given (e.g. 'day_range_pct': busier = bigger).
+    Rows without a change are left out - the caller lists them."""
+    d = df.dropna(subset=["change_pct"]).copy()
+    fig = go.Figure()
+    if d.empty:
+        return _base_layout(fig, height, legend=False)
+    sizes = d[size_col].fillna(0).clip(lower=0.05) if size_col else pd.Series(1.0, index=d.index)
+    ids, labels, parents, values, colors, text, hover = ["All"], ["All"], [""], [0.0], [0.0], [""], [""]
+    for group in [g for g in ("Index", "Stock", "Commodity") if g in set(d["group"])]:
+        ids.append(group); labels.append(group); parents.append("All"); values.append(0.0); colors.append(0.0); text.append(""); hover.append("")
+        for sector in sorted(set(d.loc[d["group"] == group, "sector"])):
+            sid = f"{group}/{sector}"
+            if sector != group:
+                ids.append(sid); labels.append(sector); parents.append(group); values.append(0.0); colors.append(0.0); text.append(""); hover.append("")
+            for idx, r in d[(d["group"] == group) & (d["sector"] == sector)].iterrows():
+                pct = float(r["change_pct"])
+                ids.append(f"{sid}/{r['symbol']}"); labels.append(r["symbol"]); parents.append(sid if sector != group else group)
+                values.append(float(sizes[idx])); colors.append(pct)
+                text.append(f"{'▲' if pct > 0 else '▼' if pct < 0 else '■'} {pct:+.2f}%")
+                last = r.get("last")
+                hover.append(f"{r['name']}<br>{pct:+.2f}%" + (f"<br>last {last:,.2f}" if pd.notna(last) else ""))
+    fig.add_trace(go.Treemap(
+        ids=ids, labels=labels, parents=parents, values=values, text=text, customdata=hover,
+        texttemplate="<b>%{label}</b><br>%{text}", hovertemplate="%{customdata}<extra></extra>",
+        marker=dict(colors=colors, colorscale=[[0, DOWN_COLOR], [0.5, FLAT_COLOR], [1, UP_COLOR]], cmid=0,
+                    cmin=-color_limit, cmax=color_limit, line=dict(width=2, color=SURFACE),
+                    colorbar=dict(title=dict(text="% change"), thickness=10, len=0.6, ticksuffix="%")),
+        textfont=dict(color="#ffffff", size=14), tiling=dict(pad=3), root_color="rgba(0,0,0,0)",
+    ))
+    _base_layout(fig, height, legend=False)
+    fig.update_layout(hovermode="closest")
+    return fig
+
+
 def r_ci_chart(table: pd.DataFrame, height: int | None = None) -> go.Figure:
     """Mean R per strategy with its 95% interval (mean +/- 1.96 standard errors) against a zero line.
 

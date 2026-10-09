@@ -21,6 +21,7 @@ import threading
 from quant_intelligence.brokers.dhan_api_client import DhanApiClient
 from quant_intelligence.brokers.paper_broker import PaperBroker
 from quant_intelligence.config.settings import DATA_CACHE_DIR, SETTINGS
+from quant_intelligence.execution.mover_selection import MoverConfig, Selection, compute_selection
 from quant_intelligence.execution.multi_cycle import run_multi_instrument_cycle
 from quant_intelligence.execution.square_off import in_close_window, square_off_positions
 from quant_intelligence.risk.risk_engine import AccountState
@@ -57,17 +58,66 @@ class ScanRunner:
         self.last_error: str | None = None
         self.market_hours_only = True
 
+        # Heatmap mover selection (see execution/mover_selection.py). None = scan everything, as always.
+        self._mover_lock = threading.Lock()
+        self._mover_config: MoverConfig | None = MoverConfig.from_settings() if SETTINGS.mover_selection_enabled else None
+        self._mover_frozen: Selection | None = None  # the selection made when applied with auto-refresh off
+        self.mover_selection: Selection | None = None  # what the last scan used (for the pages)
+
+    # ---- heatmap mover selection -----------------------------------------------
+    @property
+    def mover_config(self) -> MoverConfig | None:
+        return self._mover_config
+
+    def set_mover_config(self, config: MoverConfig, frozen: Selection | None = None) -> None:
+        """Scan only the heatmap's movers from the next cycle. With `config.auto_refresh` the selection is recomputed
+        every cycle; otherwise `frozen` (made when the user pressed Apply) is kept until cleared."""
+        with self._mover_lock:
+            self._mover_config = config
+            self._mover_frozen = None if config.auto_refresh else frozen
+            self.mover_selection = frozen
+        log_event("engine", f"Heatmap mover selection ON ({self.name}): top {config.n} per side, min move {config.min_abs_pct:g}%, "
+                            f"{'refreshed every cycle' if config.auto_refresh else 'fixed until cleared'}", level="INFO")
+
+    def clear_mover_config(self) -> None:
+        with self._mover_lock:
+            self._mover_config = None
+            self._mover_frozen = None
+            self.mover_selection = None
+        log_event("engine", f"Heatmap mover selection OFF ({self.name}): scanning every instrument", level="INFO")
+
+    def _resolve_selection(self, index_symbols, stock_symbols) -> Selection | None:
+        with self._mover_lock:
+            config, frozen = self._mover_config, self._mover_frozen
+        if config is None:
+            return None
+        if frozen is not None:
+            return frozen
+        groups = {"Index": list(index_symbols), ("Commodity" if self.profile.name == "MCX" else "Stock"): list(stock_symbols)}
+        sel = compute_selection({g: s for g, s in groups.items() if s}, config)
+        if not config.auto_refresh:
+            with self._mover_lock:
+                self._mover_frozen = sel
+        return sel
+
     # ---- scanning ------------------------------------------------------------
     def run_cycle(self, index_symbols, stock_symbols, timeframe: str, lookback_days: int) -> list[dict]:
         """One full scan. Safe to call from the UI thread ('Run one cycle now') or the worker."""
         owner = self.owner
         with self.scan_lock:
+            selection = self._resolve_selection(index_symbols, stock_symbols)
+            self.mover_selection = selection
+            indices, stocks = list(index_symbols), list(stock_symbols)
+            if selection is not None:  # nothing selected -> nothing new is scanned; open positions are still monitored
+                indices, stocks = selection.only(indices), selection.only(stocks)
             # Fresh client each cycle so a token updated in the sidebar/secrets applies immediately.
             rows, pnl_delta = run_multi_instrument_cycle(
-                list(index_symbols), list(stock_symbols), timeframe, lookback_days,
+                indices, stocks, timeframe, lookback_days,
                 owner.broker, DhanApiClient(), owner.account_state,
-                broker_lock=owner.lock, on_fill=owner.add_trade,
+                broker_lock=owner.lock, on_fill=owner.add_trade, selection=selection,
             )
+            if selection is not None and not selection.usable:
+                rows.insert(0, {"symbol": "-", "type": "selection", "strategy": "-", "status": "NO_SELECTION", "detail": selection.reason})
             owner.add_pnl(pnl_delta)
             self.last_rows = rows
             self.last_cycle_at = now_ist()

@@ -106,7 +106,23 @@ def _zero_size_reason(account: AccountState, entry_price: float | None = None, s
     return f"{NO_SIZE_PREFIX} position sizing produced zero quantity (budget Rs {budget:,.0f}{cut}; stop too wide for one lot, or equity too small)."
 
 
-def chain_needed(output: PipelineOutput, underlying: str, broker: PaperBroker) -> bool:
+DIRECTION_FILTER_PREFIX = "Direction filtered"
+
+
+def direction_blocked(setup_direction: str, transaction: str, allowed_direction: str | None) -> bool:
+    """True when the heatmap selection only allows the opposite direction. Applies to BOUGHT options only: a written
+    (SELL) option has its own payoff and is outside what 'follow the move' means, so it is never filtered."""
+    return bool(allowed_direction) and transaction == "BUY" and setup_direction != allowed_direction
+
+
+def direction_filtered_reason(underlying: str, setup_direction: str, allowed_direction: str | None, move_note: str = "") -> str:
+    wanted = "bullish (call)" if allowed_direction == "LONG" else "bearish (put)"
+    got = "bullish" if setup_direction == "LONG" else "bearish"
+    return (f"{DIRECTION_FILTER_PREFIX}: {underlying}{' ' + move_note if move_note else ''} - the heatmap allows only {wanted} "
+            f"trades, but this setup is {got}.")
+
+
+def chain_needed(output: PipelineOutput, underlying: str, broker: PaperBroker, allowed_direction: str | None = None) -> bool:
     """Would `run_auto_option_cycle` need the option chain for this instrument right now?
 
     Cheap and network-free: True only if a strategy was selected, there is no open position on the
@@ -122,7 +138,11 @@ def chain_needed(output: PipelineOutput, underlying: str, broker: PaperBroker) -
         return True
     strategy = get_strategy(strategy_name)
     status = detect_setup(strategy, output.market_state, output.ohlcv.tail(5))
-    return status.status == SETUP_TRIGGERED
+    if status.status != SETUP_TRIGGERED:
+        return False
+    if allowed_direction and status.setup is not None:  # a setup the heatmap will refuse needs no (rate-limited) chain
+        return not direction_blocked(status.setup.direction, status.setup.meta.get("transaction", "BUY"), allowed_direction)
+    return True
 
 
 def _expectation(output: PipelineOutput) -> dict:
@@ -140,9 +160,14 @@ def run_auto_option_cycle(
     client: DhanApiClient,
     chain: "ChainSnapshot | Callable[[], ChainSnapshot | None] | None",
     account: AccountState,
+    allowed_direction: str | None = None,
+    move_note: str = "",
 ) -> AutoCycleResult:
-    """One automatic cycle (see `_run_auto_option_cycle`); the outcome is also written to the decision log."""
-    result = _run_auto_option_cycle(output, underlying, broker, client, chain, account)
+    """One automatic cycle (see `_run_auto_option_cycle`); the outcome is also written to the decision log.
+
+    `allowed_direction` ("LONG"/"SHORT") comes from the heatmap mover selection: a BOUGHT option whose setup points the
+    other way is skipped (reason starts "Direction filtered"). None = no restriction."""
+    result = _run_auto_option_cycle(output, underlying, broker, client, chain, account, allowed_direction, move_note)
     from quant_intelligence.reports.decision_log import log_cycle
 
     log_cycle(output, result)
@@ -156,6 +181,8 @@ def _run_auto_option_cycle(
     client: DhanApiClient,
     chain: "ChainSnapshot | Callable[[], ChainSnapshot | None] | None",
     account: AccountState,
+    allowed_direction: str | None = None,
+    move_note: str = "",
 ) -> AutoCycleResult:
     """One automatic cycle for the index/options paper-trading flow (07_Paper_Trading).
 
@@ -214,6 +241,10 @@ def _run_auto_option_cycle(
 
     setup = setup_status.setup
     transaction = setup.meta.get("transaction", "BUY")
+
+    if direction_blocked(setup.direction, transaction, allowed_direction):
+        result.reason = direction_filtered_reason(underlying, setup.direction, allowed_direction, move_note)
+        return result
 
     try:
         chain = get_chain()  # first (and only) fetch for a non-chain strategy: the setup has triggered

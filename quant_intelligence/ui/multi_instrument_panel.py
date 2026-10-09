@@ -37,7 +37,7 @@ from quant_intelligence.utils.timeutil import now_ist
 _CFG = {"displayModeBar": False}
 _STATUS_LABEL = {
     "NO_TRADE": "– No trade", "WAITING_FOR_SETUP": "◔ Waiting for setup", "SETUP_TRIGGERED": "▲ Setup triggered",
-    "CHAIN_ERROR": "✖ Chain error", "DATA_ERROR": "✖ Data error", "MONITOR_ERROR": "✖ Monitor error",
+    "NO_SELECTION": "– Nothing selected", "CHAIN_ERROR": "✖ Chain error", "DATA_ERROR": "✖ Data error", "MONITOR_ERROR": "✖ Monitor error",
 }
 
 
@@ -133,6 +133,7 @@ def _today_closed(market: str) -> pd.DataFrame:
 @st.fragment(run_every="10s")
 def _market_watch(runner: ScanRunner, meta: list[dict], timeframe: str) -> None:
     results = {r.get("symbol"): r for r in runner.last_rows}
+    picked = runner.mover_selection if runner.mover_config is not None else None
     rows = []
     for m in meta:
         snap = load_snapshot(m["symbol"], timeframe)
@@ -140,6 +141,8 @@ def _market_watch(runner: ScanRunner, meta: list[dict], timeframe: str) -> None:
         span = (snap["high"] - snap["low"]) if snap else 0
         rows.append(
             {
+                "Heatmap": ({"LONG": "▲ calls only", "SHORT": "▼ puts only"}.get(picked.allowed_direction(m["symbol"]), "–")
+                            if picked is not None else None),
                 "Symbol": m["symbol"],
                 "Name": m["name"],
                 "Group": m["group"],
@@ -155,6 +158,8 @@ def _market_watch(runner: ScanRunner, meta: list[dict], timeframe: str) -> None:
         )
     df = pd.DataFrame(rows)
     df["Needs"] = pd.to_numeric(df["Needs"], errors="coerce")
+    if df["Heatmap"].isna().all():
+        df = df.drop(columns=["Heatmap"])
     if df["Lot"].isna().all():
         df = df.drop(columns=["Lot"])
     if df["Needs"].isna().all():
@@ -295,6 +300,10 @@ def render_multi_instrument_panel(runner: ScanRunner = ENGINE, commodities: bool
             "instrument and fetches an option chain only when a setup triggers."
         )
 
+    cfg = runner.mover_config
+    if cfg is not None:
+        st.info(f"Heatmap selection is ON: only the top {cfg.n} gainers and losers per group are scanned (up-movers take calls, "
+                f"down-movers puts; min move {cfg.min_abs_pct:g}%). Change it on the NSE Heatmap page.")
     _live_header(runner, market, [m["symbol"] for m in meta])
 
     st.markdown("#### Market watch")

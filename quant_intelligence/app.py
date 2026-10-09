@@ -108,5 +108,6 @@ for col, (regime, prob) in zip(regime_cols, sorted(output.regime_probabilities.i
 st.divider()
 st.caption(
     "Use the pages in the sidebar for Market State detail, Strategy Intelligence drill-down, "
-    "Backtest Lab, Historical Analogues, Paper Trading, Positions & Risk Control, and Research Reports."
+    "Backtest Lab, Historical Analogues, Paper Trading, Positions & Risk Control, Research Reports, the Daily Report, "
+    "and the NSE Heatmap (pick the day's movers for the paper traders)."
 )

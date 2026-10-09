@@ -191,6 +191,14 @@ class Settings:
     # given explicitly (Strategy Library / Backtest Lab) are never scaled. Clamped to 0.2-3.0.
     stop_atr_scale: float = min(max(_float_env("STOP_ATR_SCALE", 1.0), 0.2), 3.0)
 
+    # Heatmap mover selection (execution/mover_selection.py): when on, each auto paper trader scans only the N biggest
+    # gainers and N biggest losers per group, and an up-mover takes only bullish setups, a down-mover only bearish.
+    # Off = scan everything as before. The page "NSE Heatmap" can also switch it on for the running process.
+    mover_selection_enabled: bool = _bool_env("MOVER_SELECTION_ENABLED", False)
+    mover_top_n: int = min(max(_int_env("MOVER_TOP_N", 5), 1), 15)
+    mover_min_abs_pct: float = max(_float_env("MOVER_MIN_ABS_PCT", 0.3), 0.0)
+    mover_max_age_minutes: float = max(_float_env("MOVER_MAX_AGE_MINUTES", 20.0), 1.0)
+
     # Volatility layer (quant_intelligence/volatility/). Every behaviour change is OFF by default; the pure
     # computation modules (estimators, Black-Scholes) are always importable.
     vol_models_enabled: bool = _bool_env("VOL_MODELS_ENABLED", False)

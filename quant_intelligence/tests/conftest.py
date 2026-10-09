@@ -21,6 +21,7 @@ os.environ["MAX_RISK_PER_TRADE_PCT"] = "1.0"  # the pre-0.2% sizing the existing
 os.environ["MAX_DAILY_LOSS_PCT"] = "3.0"
 os.environ["MAX_CAPITAL_PER_TRADE_PCT"] = "5.0"
 os.environ["STOP_ATR_SCALE"] = "1.0"
+os.environ["MOVER_SELECTION_ENABLED"] = "false"  # tests scan everything unless they switch the selection on themselves
 os.environ["TOKEN_KEEPER"] = "false"  # tests must never renew/replace tokens or call Dhan auth
 os.environ["DATA_KEEPER"] = "false"  # the real background thread must never start (or call Dhan) during tests
 os.environ["DATABASE_URL"] = "sqlite:///" + (Path(tempfile.mkdtemp(prefix="qi_test_db_")) / "test.db").as_posix()

@@ -140,6 +140,7 @@ Run the app and use the sidebar page list. The main page (`app.py`) is the comma
 | **12 Live Options Trading** | Real orders via Dhan - disabled unless fully authorised (see Safety model). |
 | **13 Auto Multi-Instrument Trading** | Background auto-trader over NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX and the 15-stock watchlist: control bar, live account/market tiles, a **market watch** (last price, change %, day-range bar, sparkline and the last scan result per instrument), and tabs for positions, scan results, an activity feed (orders, risk vetoes, exits) and today's performance. |
 | **15 Daily Report** | How the system worked each day and which strategies are earning, generated automatically after each market close and kept day by day: a plain-English summary, a strategy leaderboard with confidence (mean R with 95% whiskers - hollow marker means too few trades), signals-vs-trades funnel and why the system stood aside, realised vs backtest-expected R, breakdowns (instrument, exit reason, entry hour, TIE-BREAK vs normal ...), system/data health, and a table of every past day. Downloads: Excel, Markdown, JSON. |
+| **16 NSE Heatmap** | Every index, stock and commodity on the watchlist as a treemap coloured by % change (today, 5 days or 1 month), with gainer/loser tables and a **Selection panel** that picks the day's biggest movers for the auto paper traders (see *Heatmap mover selection*). |
 | **14 Commodity Auto Trading (MCX)** | The same layout for a second, independent background auto-trader for MCX commodities with its own session hours and square-off countdown. |
 
 A sidebar indicator on every page shows when auto-trading is running and offers a Stop button.
@@ -384,6 +385,31 @@ separately.
   when fully authorised (below). It has been tested against Dhan's documented request shapes but **not
   against a real funded account**.
 
+### Heatmap mover selection
+
+The **NSE Heatmap** page (16) turns the watchlist into a treemap (group, then sector, coloured by % change; blue = up,
+orange = down so green/red keep meaning profit/loss; every tile also carries an arrow and a signed %). Its Selection
+panel lets the two auto paper traders scan only the day's movers:
+
+- Per group (NSE indices, NSE stocks, MCX commodities) it takes the **N biggest gainers and N biggest losers**
+  (default N = 5) by % change against the previous session's close, ignoring moves below `MOVER_MIN_ABS_PCT`
+  (0.3%) - a quiet day selects fewer, or none.
+- **Direction follows the move.** An up-mover may only take bullish setups (a bought call), a down-mover only bearish
+  ones (a bought put). A setup against the move is skipped *before* the option chain is fetched, logged as
+  `DIRECTION_FILTER`, and counted in the Daily Report. Written (SELL) options are not filtered.
+- It only narrows what is scanned and which direction is allowed. The strategies still decide whether to enter, and the
+  risk engine, loss limits and sizing are unchanged. Positions already open are still monitored and exited.
+- "Keep refreshing" recomputes the list every scan cycle; otherwise it is fixed when you press Apply. **Clear** goes
+  back to scanning everything. Pages 13/14 show a banner and a Heatmap column while it is on.
+- Quotes come from the 5-minute candle cache (no Dhan request). If the newest candle is not from today and within
+  `MOVER_MAX_AGE_MINUTES` (20), **nothing is selected** - the system never trades on yesterday's move or on a missing
+  quote treated as 0%. With the market closed the map still shows the last session, with a warning.
+- The state lives in the running process (not saved): after a restart, apply it again, or set
+  `MOVER_SELECTION_ENABLED=true` so both traders start with it on.
+
+This filter is **unmeasured**: there is no evidence yet that following the day's move improves net R. Compare a few
+sessions in the Daily Report (TIE-BREAK/entry breakdowns and the filtered-setup count) before relying on it.
+
 ## Safety model
 
 - **Paper by default.** `TRADING_MODE=PAPER`.
@@ -457,6 +483,10 @@ SQLite even with no `.env`.
 | `MAX_CAPITAL_PER_TRADE_PCT` | `5.0` | Max premium outlay in one trade, % of equity (0 disables). |
 | `MAX_DAILY_LOSS_PCT` | `1.5` | Daily loss limit; trading stops for the day beyond it. |
 | `STOP_ATR_SCALE` | `1.0` | Multiplies the default stop and target distance of every ATR-based strategy together (0.5 = half as far). Explicit parameters are never scaled; clamped 0.2-3.0. |
+| `MOVER_SELECTION_ENABLED` | `false` | Start both auto-traders scanning only the heatmap's movers (up-movers take calls, down-movers puts). Also switchable on the NSE Heatmap page. |
+| `MOVER_TOP_N` | `5` | Gainers and losers selected per group (1-15). |
+| `MOVER_MIN_ABS_PCT` | `0.3` | A move smaller than this is noise and is not selected. |
+| `MOVER_MAX_AGE_MINUTES` | `20` | The newest candle must be this recent (and from today) or nothing is selected. |
 | `MAX_STRATEGY_EXPOSURE_PCT` | `10.0` | Risk concentrated in one strategy. |
 | `MAX_PORTFOLIO_EXPOSURE_PCT` | `20.0` | Total capital at risk. |
 | `MAX_TRADES_PER_DAY` | `6` | Daily trade count limit. |

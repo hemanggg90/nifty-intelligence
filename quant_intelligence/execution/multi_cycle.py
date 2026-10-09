@@ -31,8 +31,12 @@ def run_multi_instrument_cycle(
     get_account: Callable,
     broker_lock=None,
     on_fill: Callable | None = None,
+    selection=None,
 ) -> tuple[list[dict], float]:
     """Returns (result rows, realised P&L from positions closed during the cycle).
+
+    `selection` (execution.mover_selection.Selection) restricts the scan to the heatmap's movers and passes each
+    one's allowed direction to the auto-trader; the symbol lists passed in are expected to be already filtered.
 
     `broker_lock` (an RLock shared by every runner using this broker) is held only around the
     steps that read cash/positions and place orders, so scans on different watchlists overlap
@@ -58,6 +62,9 @@ def run_multi_instrument_cycle(
 
         # The chain is fetched lazily, only if this instrument's strategy actually triggers (see
         # run_auto_option_cycle) - not for every instrument every cycle.
+        allowed = selection.allowed_direction(symbol) if selection is not None else None
+        move_note = (f"({'up' if allowed == 'LONG' else 'down'} {selection.change_pct[symbol]:+.2f}% today)"
+                     if allowed else "")
         chain_provider = (
             (lambda sym=symbol: fetch_chain(client, sym, SETTINGS.option_expiry_preference))
             if client.is_configured()
@@ -67,7 +74,7 @@ def run_multi_instrument_cycle(
         # Not under broker_lock: the chain fetch can take seconds (rate-limited) and must not block
         # the other runner's fills. The lock is taken around the decision/fill below.
         triggered_chain = None
-        if chain_provider is not None and chain_needed(output, symbol, broker):
+        if chain_provider is not None and chain_needed(output, symbol, broker, *([allowed] if allowed else [])):
             try:
                 triggered_chain = chain_provider()
             except Exception as e:
@@ -88,7 +95,8 @@ def run_multi_instrument_cycle(
         with broker_lock:
             account = get_account()  # fresh cash/exposure: another runner may have filled meanwhile
             cycle = run_auto_option_cycle(
-                output, symbol, broker, client, triggered_chain if triggered_chain is not None else chain_provider, account
+                output, symbol, broker, client, triggered_chain if triggered_chain is not None else chain_provider, account,
+                allowed, move_note,
             )
             if cycle.order is not None:
                 if on_fill is not None and cycle.order.status == "FILLED":

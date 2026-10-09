@@ -58,6 +58,8 @@ def classify_cycle(output, result) -> dict:
         code = "FILLED" if status == "FILLED" else "ORDER_REJECTED"
     elif "RISK ENGINE VETO" in reason:
         status, code = "VETOED", _veto_class(reason)
+    elif reason.startswith("Direction filtered"):
+        status, code = "SKIPPED", "DIRECTION_FILTER"  # a setup fired against the heatmap mover's direction
     elif reason.startswith("NO SIZE"):
         status, code = "TRIGGERED", "NO_SIZE"  # a setup fired but one lot is above the per-trade loss budget
     elif result.setup_status == "CHAIN_ERROR":
