@@ -198,6 +198,10 @@ class Settings:
     mover_top_n: int = min(max(_int_env("MOVER_TOP_N", 5), 1), 15)
     mover_min_abs_pct: float = max(_float_env("MOVER_MIN_ABS_PCT", 0.3), 0.0)
     mover_max_age_minutes: float = max(_float_env("MOVER_MAX_AGE_MINUTES", 20.0), 1.0)
+    # "nse": NSE stocks are every F&O stock on NSE's live heatmap (falls back to the watchlist when NSE is unreachable);
+    # "watchlist": only the 15 watchlist stocks, read from the candle cache.
+    mover_universe: str = "watchlist" if os.getenv("MOVER_UNIVERSE", "nse").strip().lower() == "watchlist" else "nse"
+    mover_nse_refresh_minutes: float = max(_float_env("MOVER_NSE_REFRESH_MINUTES", 2.0), 0.5)  # how often NSE is asked
 
     # Volatility layer (quant_intelligence/volatility/). Every behaviour change is OFF by default; the pure
     # computation modules (estimators, Black-Scholes) are always importable.

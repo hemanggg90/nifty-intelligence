@@ -387,13 +387,19 @@ separately.
 
 ### Heatmap mover selection
 
-The **NSE Heatmap** page (16) turns the watchlist into a treemap (group, then sector, coloured by % change; blue = up,
+The **NSE Heatmap** page (16) turns the market into a treemap (group, then sector, coloured by % change; blue = up,
 orange = down so green/red keep meaning profit/loss; every tile also carries an arrow and a signed %). Its Selection
 panel lets the two auto paper traders scan only the day's movers:
 
+- **Full NSE market.** For NSE stocks the movers come from NSE's own live data - the top 20 gainers and top 20 losers
+  among **every stock that has listed options** (about 200), via nseindia.com's `live-analysis-variations` endpoint
+  (`data_adapters/nse_heatmap.fetch_fno_movers`, refreshed every `MOVER_NSE_REFRESH_MINUTES`, quote time taken from
+  NSE). A selected stock does not have to be on the 15-stock watchlist: the pipeline fetches its candles and resolves its
+  option chain from Dhan's scrip master like any other F&O underlying. Choose "Watchlist only" to restrict it.
+  Indices and MCX commodities (NSE has no MCX data) still come from the candle cache.
 - Per group (NSE indices, NSE stocks, MCX commodities) it takes the **N biggest gainers and N biggest losers**
-  (default N = 5) by % change against the previous session's close, ignoring moves below `MOVER_MIN_ABS_PCT`
-  (0.3%) - a quiet day selects fewer, or none.
+  (default N = 5, at most 15 because NSE publishes 20 per side) by % change against the previous close, ignoring moves
+  below `MOVER_MIN_ABS_PCT` (0.3%) - a quiet day selects fewer, or none.
 - **Direction follows the move.** An up-mover may only take bullish setups (a bought call), a down-mover only bearish
   ones (a bought put). A setup against the move is skipped *before* the option chain is fetched, logged as
   `DIRECTION_FILTER`, and counted in the Daily Report. Written (SELL) options are not filtered.
@@ -401,9 +407,14 @@ panel lets the two auto paper traders scan only the day's movers:
   risk engine, loss limits and sizing are unchanged. Positions already open are still monitored and exited.
 - "Keep refreshing" recomputes the list every scan cycle; otherwise it is fixed when you press Apply. **Clear** goes
   back to scanning everything. Pages 13/14 show a banner and a Heatmap column while it is on.
-- Quotes come from the 5-minute candle cache (no Dhan request). If the newest candle is not from today and within
-  `MOVER_MAX_AGE_MINUTES` (20), **nothing is selected** - the system never trades on yesterday's move or on a missing
-  quote treated as 0%. With the market closed the map still shows the last session, with a warning.
+- **Honest fallbacks.** NSE's endpoints are undocumented and NSE blocks some servers (Streamlit Cloud included, possibly).
+  If NSE is unreachable, or NSE is closed, the selection says so and uses the watchlist from the candle cache. If the
+  newest quote/candle is not from today and within `MOVER_MAX_AGE_MINUTES` (20), **nothing is selected** - the system
+  never trades on yesterday's move or on a missing quote treated as 0%. The map hides tiles whose data is not current
+  while others are live. (The older `/api/equity-stockIndices` route used by `fetch_heatmap_universe` now returns 404
+  from NSE for every index, so it is no longer used.)
+- The map can show only the watchlist plus NSE's top 20 + 20 movers, not all ~200 stocks, because that is all NSE
+  publishes live; the 5-day and 1-month views use the watchlist candles only.
 - The state lives in the running process (not saved): after a restart, apply it again, or set
   `MOVER_SELECTION_ENABLED=true` so both traders start with it on.
 
@@ -486,7 +497,9 @@ SQLite even with no `.env`.
 | `MOVER_SELECTION_ENABLED` | `false` | Start both auto-traders scanning only the heatmap's movers (up-movers take calls, down-movers puts). Also switchable on the NSE Heatmap page. |
 | `MOVER_TOP_N` | `5` | Gainers and losers selected per group (1-15). |
 | `MOVER_MIN_ABS_PCT` | `0.3` | A move smaller than this is noise and is not selected. |
-| `MOVER_MAX_AGE_MINUTES` | `20` | The newest candle must be this recent (and from today) or nothing is selected. |
+| `MOVER_MAX_AGE_MINUTES` | `20` | The newest candle/quote must be this recent (and from today) or nothing is selected. |
+| `MOVER_UNIVERSE` | `nse` | `nse` = NSE stocks are chosen from every F&O stock on NSE's live gainers/losers (watchlist fallback if NSE is unreachable); `watchlist` = the 15 stocks only. |
+| `MOVER_NSE_REFRESH_MINUTES` | `2` | How often NSE is asked for movers. |
 | `MAX_STRATEGY_EXPOSURE_PCT` | `10.0` | Risk concentrated in one strategy. |
 | `MAX_PORTFOLIO_EXPOSURE_PCT` | `20.0` | Total capital at risk. |
 | `MAX_TRADES_PER_DAY` | `6` | Daily trade count limit. |

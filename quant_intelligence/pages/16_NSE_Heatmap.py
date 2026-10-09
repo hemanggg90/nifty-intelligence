@@ -14,7 +14,7 @@ import streamlit as st
 
 from quant_intelligence.config.settings import SETTINGS
 from quant_intelligence.execution.engine import COMMODITY_RUNNER, ENGINE
-from quant_intelligence.execution.mover_selection import DOWN, UP, MoverConfig, compute_selection
+from quant_intelligence.execution.mover_selection import DOWN, UP, MoverConfig, select as select_movers
 from quant_intelligence.ui.charts import heatmap_treemap
 from quant_intelligence.ui.components import chip, empty_state, page_header
 from quant_intelligence.ui.heatmap_data import GROUPS, WINDOWS, build_heatmap_frame, groups_of
@@ -38,6 +38,11 @@ page_header(
 
 def _selection_panel() -> None:
     st.markdown("#### Select movers for paper trading")
+    universe_label = st.radio(
+        "Stocks to choose from", ["Full NSE market (all F&O stocks, live from NSE)", "Watchlist only (15 stocks)"],
+        index=0 if SETTINGS.mover_universe == "nse" else 1, horizontal=True, key="hm_universe",
+        help="The full market uses NSE's live top-20 gainers and top-20 losers among every stock that has listed options. "
+             "NSE blocks some servers; when it cannot be reached the selection says so and uses the watchlist from the candle cache.")
     c1, c2, c3 = st.columns([1, 1, 2], vertical_alignment="bottom")
     n = c1.slider("Gainers and losers per group", 1, 15, SETTINGS.mover_top_n, key="hm_n",
                   help="Per group: NSE indices, NSE stocks, commodities. Up to N gainers and N losers each.")
@@ -45,8 +50,10 @@ def _selection_panel() -> None:
                               help="A smaller move is treated as noise and not selected, so a quiet day selects fewer than N.")
     auto = c3.checkbox("Keep refreshing the selection every scan cycle", value=True, key="hm_auto",
                        help="On: the list follows the market through the day. Off: the list is fixed at the moment you press Apply.")
-    config = MoverConfig(n=int(n), min_abs_pct=float(min_abs), max_age_minutes=SETTINGS.mover_max_age_minutes, auto_refresh=bool(auto))
-    preview = compute_selection(groups_of(), config)
+    config = MoverConfig(n=int(n), min_abs_pct=float(min_abs), max_age_minutes=SETTINGS.mover_max_age_minutes, auto_refresh=bool(auto),
+                         universe="nse" if universe_label.startswith("Full") else "watchlist")
+    groups = groups_of()
+    preview = select_movers(groups["Index"], groups["Stock"], "Stock", config).merge(select_movers([], groups["Commodity"], "Commodity", config))
 
     if preview.usable:
         rows = [{"Symbol": s, "Group": preview.group_of[s], "Change today": preview.change_pct[s], "Allowed": _ACTION[preview.picks[s]]}
@@ -54,6 +61,8 @@ def _selection_panel() -> None:
         st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", height=min(38 * (len(rows) + 1) + 3, 420),
                      column_config={"Change today": st.column_config.NumberColumn(format="%+.2f%%")})
         st.caption(f"Preview: {preview.summary()}. {preview.reason}".strip())
+    if preview.universe_note:
+        st.caption(("🟢 " if preview.source == "nse_live" else "🟠 ") + preview.universe_note)
     else:
         st.info(preview.reason or "Nothing to select right now.")
 
@@ -75,8 +84,11 @@ def _selection_panel() -> None:
             st.markdown(f"{chip('OFF', 'muted')} **{title}** scans every instrument.", unsafe_allow_html=True)
         else:
             used = f" - last scan used: {sel.summary()}" if sel is not None and sel.usable else (f" - {sel.reason}" if sel is not None and sel.reason else "")
-            st.markdown(f"{chip('ON', 'good')} **{title}** scans the top {cfg.n} gainers and losers per group "
+            scope = "" if runner is COMMODITY_RUNNER else (" of the full NSE F&O market" if cfg.universe == "nse" else " of the watchlist")
+            st.markdown(f"{chip('ON', 'good')} **{title}** scans the top {cfg.n} gainers and losers per group{scope} "
                         f"(min {cfg.min_abs_pct:g}%, {'refreshed every cycle' if cfg.auto_refresh else 'fixed'}){used}", unsafe_allow_html=True)
+            if sel is not None and sel.universe_note:
+                st.caption(("🟢 " if sel.source == "nse_live" else "🟠 ") + sel.universe_note)
     st.caption(
         "Selection only narrows which instruments are scanned and which direction may be taken; the strategies still decide "
         "whether to enter, and the risk engine and loss limits apply as always. Positions already open are still monitored and "
@@ -91,13 +103,22 @@ def _map() -> None:
     window = c1.selectbox("Change over", list(WINDOWS), key="hm_window", help="'Today' is against the previous session's close.")
     shown = c2.multiselect("Show", list(GROUPS), default=list(GROUPS), key="hm_groups")
     size_by = c3.selectbox("Tile size", ["Equal", "Day range (busier = bigger)"], key="hm_size")
-    df = build_heatmap_frame(window)
+    full = st.session_state.get("hm_universe", "Full" if SETTINGS.mover_universe == "nse" else "Watchlist").startswith("Full")
+    df = build_heatmap_frame(window, nse_stocks=full)
+    note = df.attrs.get("universe_note", "")
     df = df[df["group"].isin(shown)]
 
     with_data = df[df["has_data"]]
     if with_data.empty:
         empty_state("No candle data yet", "The data keeper fills the candle cache once a Dhan token is set; until then there is nothing to map.")
         return
+    if window == "Today" and with_data["fresh"].any() and not with_data["fresh"].all():
+        # Part of the map is live: do not mix in last-session candles (e.g. while the data keeper is paused).
+        stale = with_data[~with_data["fresh"]]["symbol"].tolist()
+        df = df[~df["symbol"].isin(stale)]
+        with_data = df[df["has_data"]]
+        st.caption(f"Hidden because their latest data is not current: {', '.join(stale[:12])}{'...' if len(stale) > 12 else ''} "
+                   f"({len(stale)}). They return when the data keeper has fresh candles.")
     newest = with_data["as_of"].max()
     if with_data["fresh"].sum() == 0:
         st.warning(f"The newest candle is from {newest:%d %b %H:%M} IST - the market is closed or the feed is not refreshing, "
@@ -105,8 +126,11 @@ def _map() -> None:
     else:
         st.caption(f"Candles as of {newest:%H:%M} IST · {int(with_data['fresh'].sum())} of {len(df)} instruments current")
 
+    if note:
+        st.caption(("🟢 " if note.startswith("NSE live") or "NSE live heatmap" in note else "🟠 ") + note)
     limit = max(1.0, float(with_data["change_pct"].abs().quantile(0.9))) if window != "Today" else 3.0
-    st.plotly_chart(heatmap_treemap(df, "day_range_pct" if size_by.startswith("Day") else None, color_limit=limit),
+    st.plotly_chart(heatmap_treemap(df, "day_range_pct" if size_by.startswith("Day") else None, color_limit=limit,
+                                    height=780 if len(with_data) > 40 else 520),
                     width="stretch", config=_CFG)
     missing = df[~df["has_data"]]["symbol"].tolist()
     if missing:

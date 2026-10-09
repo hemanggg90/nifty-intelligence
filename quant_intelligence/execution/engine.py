@@ -21,7 +21,7 @@ import threading
 from quant_intelligence.brokers.dhan_api_client import DhanApiClient
 from quant_intelligence.brokers.paper_broker import PaperBroker
 from quant_intelligence.config.settings import DATA_CACHE_DIR, SETTINGS
-from quant_intelligence.execution.mover_selection import MoverConfig, Selection, compute_selection
+from quant_intelligence.execution.mover_selection import MoverConfig, Selection, select as select_movers
 from quant_intelligence.execution.multi_cycle import run_multi_instrument_cycle
 from quant_intelligence.execution.square_off import in_close_window, square_off_positions
 from quant_intelligence.risk.risk_engine import AccountState
@@ -93,8 +93,7 @@ class ScanRunner:
             return None
         if frozen is not None:
             return frozen
-        groups = {"Index": list(index_symbols), ("Commodity" if self.profile.name == "MCX" else "Stock"): list(stock_symbols)}
-        sel = compute_selection({g: s for g, s in groups.items() if s}, config)
+        sel = select_movers(index_symbols, stock_symbols, "Commodity" if self.profile.name == "MCX" else "Stock", config)
         if not config.auto_refresh:
             with self._mover_lock:
                 self._mover_frozen = sel
@@ -109,7 +108,9 @@ class ScanRunner:
             self.mover_selection = selection
             indices, stocks = list(index_symbols), list(stock_symbols)
             if selection is not None:  # nothing selected -> nothing new is scanned; open positions are still monitored
-                indices, stocks = selection.only(indices), selection.only(stocks)
+                indices = selection.only(indices)
+                # NSE's live heatmap can pick F&O stocks that are not on the watchlist: scan those too.
+                stocks = selection.in_group("Stock") if selection.source == "nse_live" else selection.only(stocks)
             # Fresh client each cycle so a token updated in the sidebar/secrets applies immediately.
             rows, pnl_delta = run_multi_instrument_cycle(
                 indices, stocks, timeframe, lookback_days,

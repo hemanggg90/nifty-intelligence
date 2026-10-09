@@ -158,7 +158,11 @@ def _runner(monkeypatch, profile=NSE):
 
 def _fixed(monkeypatch, picks):
     """compute_selection returns whatever `picks` holds at the time (so a test can change it between cycles)."""
-    monkeypatch.setattr(engine_module, "compute_selection", lambda groups, config, **k: _selection_from(groups, picks, config))
+    def fake(index_symbols, other_symbols, other_group, config, **k):
+        groups = {g: s for g, s in (("Index", list(index_symbols)), (other_group, list(other_symbols))) if s}
+        return _selection_from(groups, picks, config)
+
+    monkeypatch.setattr(engine_module, "select_movers", fake)
 
 
 def _selection_from(groups, picks, config):
@@ -212,11 +216,12 @@ def test_the_commodity_runner_groups_its_symbols_as_commodities(monkeypatch):
     runner, seen = _runner(monkeypatch, profile=MCX)
     captured = {}
 
-    def compute(groups, config, **k):
+    def compute(index_symbols, other_symbols, other_group, config, **k):
+        groups = {g: list(s) for g, s in (("Index", index_symbols), (other_group, other_symbols)) if s}
         captured.update(groups)
         return _selection_from(groups, {"GOLD": 1.0}, config)
 
-    monkeypatch.setattr(engine_module, "compute_selection", compute)
+    monkeypatch.setattr(engine_module, "select_movers", compute)
     runner.set_mover_config(MoverConfig())
     runner.run_cycle([], ["GOLD", "SILVER"], "5min", 30)
     assert captured == {"Commodity": ["GOLD", "SILVER"]} and seen[-1][1] == ["GOLD"]
@@ -317,3 +322,172 @@ def test_the_apply_button_switches_the_runners_on_and_clear_switches_them_off(mo
     finally:
         next(b for b in at.button if b.key == "hm_clear").click().run()
     assert engine_module.ENGINE.mover_config is None and engine_module.COMMODITY_RUNNER.mover_config is None
+
+
+# ---------------------------------------------------------------- the full NSE market (live heatmap data)
+def _nse(moves, source="nse_live", at=NOW):
+    """A fake NSE heatmap response whose quotes were fetched at `at` (IST)."""
+    from quant_intelligence.utils.timeutil import IST
+
+    def loader():
+        return {"source": source, "index": "SECURITIES IN F&O", "fetched_at": at.replace(tzinfo=IST).timestamp(),
+                "constituents": [{"symbol": s, "pChange": p, "lastPrice": 100.0, "industry": "Banks", "totalTradedVolume": 1} for s, p in moves.items()]}
+    return loader
+
+
+FNO = {"AAA", "BBB", "CCC", "DDD", "TCS"}
+
+
+def test_the_nse_universe_picks_f_and_o_stocks_that_are_not_on_the_watchlist():
+    moves = {"AAA": 3.0, "BBB": 1.0, "CCC": -2.5, "DDD": -0.1, "NOOPTIONS": 9.0}  # NOOPTIONS has no listed options
+    sel = ms.select(["NIFTY"], ["TCS"], "Stock", MoverConfig(n=1, universe="nse"), NOW, loader=lambda s, tf: None,
+                    nse_loader=_nse(moves), fno_symbols=FNO)
+    assert sel.source == "nse_live"
+    assert sel.picks == {"AAA": UP, "CCC": DOWN}  # top 1 gainer and 1 loser; NOOPTIONS is not tradeable
+    assert sel.in_group("Stock") == ["AAA", "CCC"] and "NSE live heatmap" in sel.universe_note
+    assert sel.allowed_direction("CCC") == "SHORT"
+
+
+def test_watchlist_universe_never_calls_nse():
+    def boom():
+        raise AssertionError("NSE must not be called for the watchlist universe")
+
+    sel = ms.select([], ["TCS"], "Stock", MoverConfig(universe="watchlist"), NOW, loader=lambda s, tf: {"change_pct": 1.0, "as_of": FRESH},
+                    nse_loader=boom)
+    assert sel.picks == {"TCS": UP} and sel.source == "cache"
+
+
+@pytest.mark.parametrize("feed", [_nse({}, source="fallback_static"), lambda: (_ for _ in ()).throw(RuntimeError("403"))])
+def test_an_unreachable_nse_falls_back_to_the_watchlist_and_says_so(feed):
+    sel = ms.select([], ["TCS"], "Stock", MoverConfig(universe="nse"), NOW,
+                    loader=lambda s, tf: {"change_pct": 1.5, "as_of": FRESH}, nse_loader=feed, fno_symbols=FNO)
+    assert sel.source == "cache" and sel.picks == {"TCS": UP}
+    assert "watchlist" in sel.universe_note and ("unreachable" in sel.universe_note or "failed" in sel.universe_note)
+
+
+def test_nse_closed_means_no_nse_moves_and_the_watchlist_candles_are_used():
+    sunday = dt.datetime(2031, 3, 2, 11, 0)
+    sel = ms.select([], ["TCS"], "Stock", MoverConfig(universe="nse"), sunday,
+                    loader=lambda s, tf: {"change_pct": 2.0, "as_of": sunday - dt.timedelta(minutes=1)},
+                    nse_loader=_nse({"AAA": 5.0}, at=sunday), fno_symbols=FNO)
+    assert sel.source == "cache" and "closed" in sel.universe_note and "AAA" not in sel.picks
+
+
+def test_old_nse_quotes_select_nothing():
+    old = NOW - dt.timedelta(minutes=45)
+    sel = ms.select([], [], "Stock", MoverConfig(universe="nse"), NOW, nse_loader=_nse({"AAA": 4.0}, at=old), fno_symbols=FNO)
+    assert not sel.usable and sel.excluded_stale == ["AAA"]
+
+
+def test_without_a_scrip_master_only_the_watchlist_stocks_count_as_tradeable():
+    sel = ms.select([], [], "Stock", MoverConfig(universe="nse"), NOW, nse_loader=_nse({"TCS": 2.0, "ZZZ": 8.0}), fno_symbols=set())
+    assert sel.picks == {"TCS": UP} and "scrip master is unavailable" in sel.universe_note
+
+
+def test_the_runner_scans_nse_picked_stocks_that_are_not_on_the_watchlist(monkeypatch):
+    runner, seen = _runner(monkeypatch)
+    picked = ms.select(["NIFTY"], ["TCS"], "Stock", MoverConfig(n=2, universe="nse"), NOW, loader=lambda s, tf: {"change_pct": 1.0, "as_of": FRESH},
+                       nse_loader=_nse({"AAA": 3.0, "CCC": -2.5}), fno_symbols=FNO)
+    monkeypatch.setattr(engine_module, "select_movers", lambda *a, **k: picked)
+    runner.set_mover_config(MoverConfig(universe="nse"))
+    runner.run_cycle(["NIFTY"], ["TCS"], "5min", 30)
+    assert seen[-1][0] == ["NIFTY"] and seen[-1][1] == ["AAA", "CCC"]  # TCS (the watchlist) is not picked, AAA/CCC are
+
+
+def test_the_merge_keeps_both_halves_and_the_nse_source():
+    nse = ms.rank_movers([_row("AAA", "Stock", 2.0)], MoverConfig(), NOW)
+    nse.source, nse.universe_note = "nse_live", "NSE live heatmap: 1 F&O stocks."
+    mcx = ms.rank_movers([_row("GOLD", "Commodity", -1.0)], MoverConfig(), NOW)
+    merged = nse.merge(mcx)
+    assert set(merged.picks) == {"AAA", "GOLD"} and merged.source == "nse_live" and "NSE live" in merged.universe_note
+
+
+def test_the_heatmap_frame_adds_nse_movers_to_the_watchlist_tiles_when_the_feed_is_live():
+    moves = {"AAA": 3.0, "CCC": -2.5, "TCS": 1.1}  # TCS is on the watchlist too: NSE's live quote wins
+    df = heatmap_data.build_heatmap_frame("Today", now=NOW, loader=lambda s: None, nse_stocks=True, nse_loader=_nse(moves), fno_symbols=FNO)
+    stocks = df[df["group"] == "Stock"]
+    assert {"AAA", "CCC", "TCS"} <= set(stocks["symbol"]) and len(stocks) == len(heatmap_data.groups_of()["Stock"]) + 2
+    assert stocks[stocks["symbol"] == "AAA"].iloc[0]["change_pct"] == 3.0
+    assert stocks[stocks["symbol"] == "TCS"].iloc[0]["change_pct"] == 1.1 and (stocks["symbol"] == "TCS").sum() == 1
+    assert "NSE live heatmap" in df.attrs["universe_note"]
+    off = heatmap_data.build_heatmap_frame("Today", now=NOW, loader=lambda s: None, nse_stocks=True,
+                                           nse_loader=_nse({}, source="fallback_static"), fno_symbols=FNO)
+    assert len(off[off["group"] == "Stock"]) == len(heatmap_data.groups_of()["Stock"]) and "unreachable" in off.attrs["universe_note"]
+    longer = heatmap_data.build_heatmap_frame("5 days", now=NOW, loader=lambda s: None, nse_stocks=True, nse_loader=_nse(moves), fno_symbols=FNO)
+    assert "only gives today" in longer.attrs["universe_note"]
+
+
+# ---------------------------------------------------------------- the NSE fetcher (live-analysis-variations)
+class _Resp:
+    def __init__(self, body):
+        self._body = body
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._body
+
+
+def _variations(gainers, losers, stamp="09-Oct-2026 12:17:46"):
+    def block(rows):
+        return {"FOSec": {"timestamp": stamp, "data": [{"symbol": s, "ltp": 100.0, "perChange": p, "trade_quantity": 10} for s, p in rows]}}
+    return {"gainers": block(gainers), "loosers": block(losers)}
+
+
+def _patch_nse(monkeypatch, tmp_path, bodies, calls=None):
+    from unittest import mock
+
+    from quant_intelligence.data_adapters import nse_heatmap
+
+    monkeypatch.setattr(nse_heatmap, "_MOVERS_CACHE_FILE", tmp_path / "movers.json")
+    sess = mock.MagicMock()
+    sess.headers = {}
+
+    def get(url, params=None, timeout=None):
+        if calls is not None:
+            calls.append((url, (params or {}).get("index")))
+        return _Resp(bodies[(params or {}).get("index")]) if params else _Resp({})
+
+    sess.get.side_effect = get
+    monkeypatch.setattr(nse_heatmap.requests, "Session", lambda: sess)
+    return nse_heatmap
+
+
+def test_fetch_fno_movers_reads_nses_gainers_and_losers_with_its_quote_time(monkeypatch, tmp_path):
+    nse = _patch_nse(monkeypatch, tmp_path, _variations([("AAA", 4.0), ("BBB", 2.0)], [("CCC", -3.0)]))
+    out = nse.fetch_fno_movers(2)
+    assert out["source"] == "nse_live" and out["fno_only"] is True and out["as_of_ist"] == "2026-10-09T12:17:46"
+    assert {c["symbol"]: c["pChange"] for c in out["constituents"]} == {"AAA": 4.0, "BBB": 2.0, "CCC": -3.0}
+
+
+def test_fetch_fno_movers_is_cached_for_the_refresh_window(monkeypatch, tmp_path):
+    calls = []
+    nse = _patch_nse(monkeypatch, tmp_path, _variations([("AAA", 4.0)], [("CCC", -3.0)]), calls)
+    nse.fetch_fno_movers(2)
+    n = len(calls)
+    nse.fetch_fno_movers(2)
+    assert len(calls) == n  # second call inside the window made no request
+    nse.fetch_fno_movers(0)
+    assert len(calls) > n
+
+
+def test_fetch_fno_movers_fails_honestly(monkeypatch, tmp_path):
+    from unittest import mock
+
+    from quant_intelligence.data_adapters import nse_heatmap
+
+    monkeypatch.setattr(nse_heatmap, "_MOVERS_CACHE_FILE", tmp_path / "movers.json")
+    monkeypatch.setattr(nse_heatmap.requests, "Session", mock.MagicMock(side_effect=RuntimeError("blocked")))
+    out = nse_heatmap.fetch_fno_movers(2)
+    assert out["source"] == "fallback_static" and out["constituents"] == []  # no invented quotes
+
+
+def test_nse_quote_time_is_used_for_freshness_and_an_f_and_o_only_feed_needs_no_scrip_master():
+    feed = {"source": "nse_live", "fno_only": True, "fetched_at": 0, "as_of_ist": (NOW - dt.timedelta(minutes=2)).isoformat(),
+            "constituents": [{"symbol": "ZZZ", "pChange": 2.0, "lastPrice": 50.0}]}
+    out = ms.nse_stock_rows(NOW, lambda: feed, fno_symbols=set())
+    assert [r["symbol"] for r in out["rows"]] == ["ZZZ"] and out["rows"][0]["as_of"] == NOW - dt.timedelta(minutes=2)
+    old = {**feed, "as_of_ist": (NOW - dt.timedelta(hours=2)).isoformat()}
+    sel = ms.select([], [], "Stock", MoverConfig(universe="nse"), NOW, nse_loader=lambda: old, fno_symbols=set())
+    assert not sel.usable and sel.excluded_stale == ["ZZZ"]
